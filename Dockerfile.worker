@@ -1,18 +1,21 @@
 # ==============================================================================
-# ALSEK PULSE - DOCKERFILE WORKER BULLMQ (Scraping Vues & Automatisations IA)
+# ALSEK PULSE - DOCKERFILE WORKER BULLMQ (Migration DB + Seed + Scraping Cron)
 # ==============================================================================
 
 FROM node:20-alpine
 RUN apk add --no-cache libc6-compat openssl
 
 WORKDIR /app
-ENV NODE_ENV=production
 
-COPY package.json package-lock.json* ./
+# Installer toutes les dépendances (avec Prisma 6.2.1 et tsx) avant de passer en production
+ENV NODE_ENV=development
+COPY package.json ./
 COPY prisma ./prisma/
-RUN npm install --legacy-peer-deps && npx prisma generate
+RUN npm install --legacy-peer-deps && ./node_modules/.bin/prisma generate
 
+ENV NODE_ENV=production
 COPY tsconfig.json ./
 COPY src ./src
 
-CMD ["npx", "tsx", "src/worker/index.ts"]
+# Au démarrage : synchronise le schéma PostgreSQL, exécute le seed initial (idempotent via upsert), puis lance le Worker BullMQ
+CMD ["sh", "-c", "./node_modules/.bin/prisma db push --skip-generate && ./node_modules/.bin/tsx prisma/seed.ts && ./node_modules/.bin/tsx src/worker/index.ts"]
