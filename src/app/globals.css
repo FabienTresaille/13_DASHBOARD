@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-primary: #2563eb;
+  --brand-primary-rgb: 37, 99, 235;
+}
+
+[data-workspace="ALSEK"] {
+  --brand-primary: #2563eb;
+  --brand-primary-rgb: 37, 99, 235;
+}
+
+[data-workspace="VITRINE"] {
+  --brand-primary: #d97706;
+  --brand-primary-rgb: 217, 119, 6;
+}
+
+[data-workspace="ALL"] {
+  --brand-primary: #6366f1;
+  --brand-primary-rgb: 99, 102, 241;
+}
+
+body {
+  background-color: #070b14;
+  color: #f8fafc;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b1120;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}

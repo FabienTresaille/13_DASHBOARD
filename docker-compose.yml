@@ -1,0 +1,103 @@
+services:
+  # 1. Base de données relationnelle & temporelle
+  pulse-db:
+    image: postgres:16-alpine
+    container_name: alsek-pulse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-alsek_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-alsek_pulse}
+    volumes:
+      - pulse_pgdata:/var/lib/postgresql/data
+    networks:
+      - pulse-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-alsek_admin} -d ${DB_NAME:-alsek_pulse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis pour les files d'attente (Scraping Vues, Cron, Automatisations IA)
+  pulse-redis:
+    image: redis:7-alpine
+    container_name: alsek-pulse-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - pulse_redisdata:/data
+    networks:
+      - pulse-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 3. Application Cœur (Frontend + API + Portail Client Multi-Marques)
+  pulse-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alsek-pulse-web
+    restart: unless-stopped
+    depends_on:
+      pulse-db:
+        condition: service_healthy
+      pulse-redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-alsek_admin}:${DB_PASSWORD}@pulse-db:5432/${DB_NAME:-alsek_pulse}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD}@pulse-redis:6379
+      NEXTAUTH_SECRET: ${AUTH_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-contact@alsek.fr}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD}
+      # Domaines pour le Dynamic White-Labeling
+      DOMAIN_ALSEK: ${DOMAIN_ALSEK:-app.alsek.fr}
+      DOMAIN_VITRINE: ${DOMAIN_VITRINE:-pro.vitrine-caladoise.fr}
+      # Clés API externes (optionnelles au démarrage, configurables via l'UI)
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+    networks:
+      - traefik-net
+      - pulse-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      # Routage Multi-Domaine vers le même conteneur (Alsek + Vitrine Caladoise)
+      - "traefik.http.routers.alsek-pulse.rule=Host(`${DOMAIN_ALSEK:-app.alsek.fr}`) || Host(`${DOMAIN_VITRINE:-pro.vitrine-caladoise.fr}`)"
+      - "traefik.http.routers.alsek-pulse.entrypoints=websecure"
+      - "traefik.http.routers.alsek-pulse.tls.certresolver=letsencrypt"
+      - "traefik.http.services.alsek-pulse.loadbalancer.server.port=3000"
+
+  # 4. Worker Background (Cron Jobs : Tracking des posts, Avis GMB, Veille)
+  pulse-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: alsek-pulse-worker
+    restart: unless-stopped
+    depends_on:
+      pulse-db:
+        condition: service_healthy
+      pulse-redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-alsek_admin}:${DB_PASSWORD}@pulse-db:5432/${DB_NAME:-alsek_pulse}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD}@pulse-redis:6379
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+    networks:
+      - pulse-internal
+
+volumes:
+  pulse_pgdata:
+  pulse_redisdata:
+
+networks:
+  traefik-net:
+    external: true
+  pulse-internal:
+    driver: bridge
