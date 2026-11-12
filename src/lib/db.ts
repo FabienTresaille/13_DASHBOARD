@@ -1106,83 +1106,64 @@ export async function dbAddTrackedPostByUrl(input: {
   workspaceSlug: WorkspaceSlugType;
   postUrl: string;
   customTitle?: string;
-}): Promise<void> {
+  initialStats?: {
+    views?: number;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+    saves?: number;
+  };
+}): Promise<string> {
   const state = readLocalStore();
   const ws =
     state.workspaces.find((w) => w.slug === input.workspaceSlug) ||
     state.workspaces[0];
 
-  const scraped = await SocialScraperService.fetchPostMetrics(input.postUrl, {
-    customTitle: input.customTitle,
-  });
+  // URL normalisée (Instagram /reels/ -> /reel/, sans ?igsh=...)
+  const postUrl = SocialScraperService.normalizePostUrl(input.postUrl);
+  const platform = SocialScraperService.detectPlatform(postUrl);
+
+  // ZÉRO fausse donnée : compteurs à 0 sauf saisie manuelle explicite.
+  const stat = (v?: number) =>
+    Number.isFinite(v) && (v as number) > 0 ? Math.round(v as number) : 0;
+  const initial = {
+    views: stat(input.initialStats?.views),
+    likes: stat(input.initialStats?.likes),
+    comments: stat(input.initialStats?.comments),
+    shares: stat(input.initialStats?.shares),
+    saves: stat(input.initialStats?.saves),
+  };
+  const scraped = {
+    platform,
+    titleOrHook:
+      input.customTitle ||
+      SocialScraperService.extractCleanHookFromUrl(postUrl, platform),
+    thumbnailUrl: null as string | null,
+    ...initial,
+    engagementRate: SocialScraperService.computeEngagementRate(initial),
+  };
 
   const postId = generateId("post");
-  const now = new Date();
-  const dayMinus4 = new Date(now.getTime() - 4 * 86400 * 1000).toISOString();
-  const dayMinus2 = new Date(now.getTime() - 2 * 86400 * 1000).toISOString();
-  const nowIso = now.toISOString();
+  const nowIso = new Date().toISOString();
 
   const newPost: TrackedPostRecord = {
     id: postId,
     clientId: input.clientId,
     workspaceId: ws.id,
     platform: scraped.platform,
-    postUrl: input.postUrl,
+    postUrl,
     titleOrHook: scraped.titleOrHook,
     thumbnailUrl: scraped.thumbnailUrl,
     publishedAt: nowIso,
     isActiveTrack: true,
+    lastSyncedAt: null,
   };
-
-  // Créer 3 points temporels initiaux pour que la courbe d'évolution soit immédiatement visible
-  const m1Views = Math.round(scraped.views * 0.35);
-  const m1Likes = Math.round(scraped.likes * 0.38);
-  const m2Views = Math.round(scraped.views * 0.72);
-  const m2Likes = Math.round(scraped.likes * 0.74);
 
   const snapshots: PostMetricSnapshotRecord[] = [
     {
       id: generateId("pm"),
       postId,
-      views: m1Views,
-      likes: m1Likes,
-      comments: Math.max(1, Math.round(scraped.comments * 0.4)),
-      shares: Math.max(1, Math.round(scraped.shares * 0.4)),
-      saves: Math.max(1, Math.round(scraped.saves * 0.4)),
-      engagementRate: SocialScraperService.computeEngagementRate({
-        views: m1Views,
-        likes: m1Likes,
-        comments: Math.round(scraped.comments * 0.4),
-        shares: Math.round(scraped.shares * 0.4),
-        saves: Math.round(scraped.saves * 0.4),
-      }),
-      recordedAt: dayMinus4,
-    },
-    {
-      id: generateId("pm"),
-      postId,
-      views: m2Views,
-      likes: m2Likes,
-      comments: Math.max(2, Math.round(scraped.comments * 0.75)),
-      shares: Math.max(2, Math.round(scraped.shares * 0.75)),
-      saves: Math.max(2, Math.round(scraped.saves * 0.75)),
-      engagementRate: SocialScraperService.computeEngagementRate({
-        views: m2Views,
-        likes: m2Likes,
-        comments: Math.round(scraped.comments * 0.75),
-        shares: Math.round(scraped.shares * 0.75),
-        saves: Math.round(scraped.saves * 0.75),
-      }),
-      recordedAt: dayMinus2,
-    },
-    {
-      id: generateId("pm"),
-      postId,
-      views: scraped.views,
-      likes: scraped.likes,
-      comments: scraped.comments,
-      shares: scraped.shares,
-      saves: scraped.saves,
+      ...initial,
       engagementRate: scraped.engagementRate,
       recordedAt: nowIso,
     },
@@ -1204,7 +1185,7 @@ export async function dbAddTrackedPostByUrl(input: {
             clientId: input.clientId,
             workspaceId: dbWs.id,
             platform: scraped.platform,
-            postUrl: input.postUrl,
+            postUrl,
             titleOrHook: scraped.titleOrHook,
             thumbnailUrl: scraped.thumbnailUrl,
             isActiveTrack: true,
@@ -1213,7 +1194,7 @@ export async function dbAddTrackedPostByUrl(input: {
             comments: scraped.comments,
             shares: scraped.shares,
             saves: scraped.saves,
-            lastSyncedAt: new Date(),
+            lastSyncedAt: null,
           },
         });
         for (const snap of snapshots) {
@@ -1236,6 +1217,8 @@ export async function dbAddTrackedPostByUrl(input: {
       console.error("PG addTrackedPostByUrl error:", e);
     }
   }
+
+  return postId;
 }
 
 export async function dbRefreshOrUpdatePostMetrics(
@@ -1268,6 +1251,8 @@ export async function dbRefreshOrUpdatePostMetrics(
     saves: number;
     engagementRate: number;
   };
+  let nextThumbnailUrl: string | null | undefined;
+  let nextTitle: string | undefined;
 
   if (manualOverride) {
     nextMetrics = {
@@ -1276,7 +1261,9 @@ export async function dbRefreshOrUpdatePostMetrics(
         SocialScraperService.computeEngagementRate(manualOverride),
     };
   } else {
-    const scraped = await SocialScraperService.fetchPostMetrics(post.postUrl, {
+    const normalizedUrl = SocialScraperService.normalizePostUrl(post.postUrl);
+    post.postUrl = normalizedUrl;
+    const scraped = await SocialScraperService.fetchPostMetrics(normalizedUrl, {
       customTitle: post.titleOrHook || undefined,
       previousMetrics: lastMetric
         ? {
@@ -1296,13 +1283,24 @@ export async function dbRefreshOrUpdatePostMetrics(
       saves: scraped.saves,
       engagementRate: scraped.engagementRate,
     };
+    if (scraped.thumbnailUrl) {
+      nextThumbnailUrl = scraped.thumbnailUrl;
+      post.thumbnailUrl = scraped.thumbnailUrl;
+    }
+    if (scraped.titleOrHook && !post.titleOrHook) {
+      nextTitle = scraped.titleOrHook;
+      post.titleOrHook = scraped.titleOrHook;
+    }
   }
+
+  const nowIso = new Date().toISOString();
+  post.lastSyncedAt = nowIso;
 
   const newSnapshot: PostMetricSnapshotRecord = {
     id: generateId("pm"),
     postId,
     ...nextMetrics,
-    recordedAt: new Date().toISOString(),
+    recordedAt: nowIso,
   };
 
   state.postMetrics.push(newSnapshot);
@@ -1326,12 +1324,15 @@ export async function dbRefreshOrUpdatePostMetrics(
       await prisma.trackedPost.update({
         where: { id: postId },
         data: {
+          postUrl: post.postUrl,
           views: newSnapshot.views,
           likes: newSnapshot.likes,
           comments: newSnapshot.comments,
           shares: newSnapshot.shares,
           saves: newSnapshot.saves,
-          lastSyncedAt: new Date(),
+          ...(nextThumbnailUrl ? { thumbnailUrl: nextThumbnailUrl } : {}),
+          ...(nextTitle ? { titleOrHook: nextTitle } : {}),
+          lastSyncedAt: new Date(nowIso),
         },
       });
     } catch (e) {

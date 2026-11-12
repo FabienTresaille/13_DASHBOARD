@@ -1,3 +1,5 @@
+import { fetchInstagramReelViaApify } from "../worker/apify-instagram";
+
 export type SocialPlatformType =
   | "INSTAGRAM"
   | "TIKTOK"
@@ -30,6 +32,34 @@ export class SocialScraperService {
       return "FACEBOOK";
     if (lower.includes("linkedin.com")) return "LINKEDIN";
     return "INSTAGRAM";
+  }
+
+  /**
+   * Normalise l'URL collée : Instagram `/reels/` → `/reel/`, suppression des paramètres
+   * de tracking (`?igsh=...`, utm_*, fbclid) et du fragment.
+   */
+  static normalizePostUrl(rawUrl: string): string {
+    const trimmed = rawUrl.trim();
+    try {
+      const parsed = new URL(trimmed);
+      const host = parsed.hostname.toLowerCase();
+      if (host.includes("instagram.com")) {
+        parsed.pathname = parsed.pathname.replace(/\/reels\//i, "/reel/");
+        parsed.search = "";
+        parsed.hash = "";
+        if (!parsed.pathname.endsWith("/")) parsed.pathname += "/";
+        return parsed.toString();
+      }
+      for (const key of Array.from(parsed.searchParams.keys())) {
+        if (/^(utm_|igsh|igshid|fbclid|si$|feature$)/i.test(key)) {
+          parsed.searchParams.delete(key);
+        }
+      }
+      parsed.hash = "";
+      return parsed.toString();
+    } catch {
+      return trimmed;
+    }
   }
 
   /**
@@ -85,8 +115,41 @@ export class SocialScraperService {
     const platform = this.detectPlatform(postUrl);
     const apifyToken = process.env.APIFY_API_TOKEN;
 
-    // 1. Connecteur API Apify (si token présent en production)
-    if (apifyToken && apifyToken.trim().length > 10) {
+    // 0. Instagram : Apify Reel Scraper dédié (appel synchrone)
+    if (platform === "INSTAGRAM" && apifyToken && apifyToken.trim().length > 0) {
+      const current = options?.previousMetrics ?? {
+        views: 0,
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        saves: 0,
+      };
+      const ig = await fetchInstagramReelViaApify(postUrl, current, apifyToken);
+      if (ig) {
+        return {
+          platform,
+          titleOrHook:
+            options?.customTitle ||
+            ig.caption ||
+            this.extractCleanHookFromUrl(postUrl, platform),
+          thumbnailUrl: ig.thumbnailUrl,
+          views: ig.views,
+          likes: ig.likes,
+          comments: ig.comments,
+          shares: ig.shares,
+          saves: ig.saves,
+          engagementRate: this.computeEngagementRate(ig),
+          source: "APIFY_API",
+        };
+      }
+    }
+
+    // 1. Connecteur API Apify (autres plateformes, si token présent en production)
+    if (
+      platform !== "INSTAGRAM" &&
+      apifyToken &&
+      apifyToken.trim().length > 10
+    ) {
       try {
         const actorMap: Record<SocialPlatformType, string> = {
           INSTAGRAM: "apify~instagram-post-scraper",
@@ -109,11 +172,11 @@ export class SocialScraperService {
           const items = await res.json();
           if (Array.isArray(items) && items.length > 0) {
             const item = items[0];
-            const views = Number(item.videoViewCount || item.playCount || item.views || 1200);
-            const likes = Number(item.likesCount || item.diggCount || item.likes || 85);
-            const comments = Number(item.commentsCount || item.commentCount || 12);
-            const shares = Number(item.sharesCount || item.shareCount || 18);
-            const saves = Number(item.collectCount || item.savesCount || Math.round(likes * 0.15));
+            const views = Number(item.videoViewCount || item.playCount || item.views || 0);
+            const likes = Number(item.likesCount || item.diggCount || item.likes || 0);
+            const comments = Number(item.commentsCount || item.commentCount || 0);
+            const shares = Number(item.sharesCount || item.shareCount || 0);
+            const saves = Number(item.collectCount || item.savesCount || 0);
 
             return {
               platform,
@@ -172,13 +235,11 @@ export class SocialScraperService {
         const viewsMatch = desc.match(/([\d.,]+\s*[KMkm]?)\s*(views|vues|lectures)/i);
 
         if (likesMatch || viewsMatch) {
-          const likes = likesMatch ? this.parseAbbreviatedNumber(likesMatch[1]) : 140;
-          const comments = commentsMatch ? this.parseAbbreviatedNumber(commentsMatch[1]) : 16;
-          const views = viewsMatch
-            ? this.parseAbbreviatedNumber(viewsMatch[1])
-            : Math.max(likes * 18, 2400);
-          const shares = Math.round(likes * 0.14);
-          const saves = Math.round(likes * 0.22);
+          const likes = likesMatch ? this.parseAbbreviatedNumber(likesMatch[1]) : 0;
+          const comments = commentsMatch ? this.parseAbbreviatedNumber(commentsMatch[1]) : 0;
+          const views = viewsMatch ? this.parseAbbreviatedNumber(viewsMatch[1]) : 0;
+          const shares = 0;
+          const saves = 0;
 
           return {
             platform,
@@ -207,53 +268,15 @@ export class SocialScraperService {
       // Ignorer erreurs réseau/CORS ou blocage méta et passer au fallback déterministe
     }
 
-    // 3. Fallback intelligent & progression réaliste si actualisation d'un post existant
-    if (options?.previousMetrics) {
-      const prev = options.previousMetrics;
-      const deltaViews = Math.max(180, Math.round(prev.views * 0.065));
-      const deltaLikes = Math.max(9, Math.round(deltaViews * 0.052));
-      const deltaComments = Math.max(1, Math.round(deltaLikes * 0.08));
-      const deltaShares = Math.max(2, Math.round(deltaLikes * 0.12));
-      const deltaSaves = Math.max(3, Math.round(deltaLikes * 0.18));
-
-      const views = prev.views + deltaViews;
-      const likes = prev.likes + deltaLikes;
-      const comments = prev.comments + deltaComments;
-      const shares = prev.shares + deltaShares;
-      const saves = prev.saves + deltaSaves;
-
-      return {
-        platform,
-        titleOrHook:
-          options.customTitle || this.extractCleanHookFromUrl(postUrl, platform),
-        thumbnailUrl: null,
-        views,
-        likes,
-        comments,
-        shares,
-        saves,
-        engagementRate: this.computeEngagementRate({
-          views,
-          likes,
-          comments,
-          shares,
-          saves,
-        }),
-        source: "SMART_ESTIMATION",
-      };
-    }
-
-    // Initialisation d'un nouveau post collé
-    const hash = Array.from(postUrl).reduce(
-      (acc, char) => acc + char.charCodeAt(0),
-      0
-    );
-    const views = 3200 + (hash % 14500);
-    const likes = Math.round(views * 0.058);
-    const comments = Math.round(likes * 0.09);
-    const shares = Math.round(likes * 0.16);
-    const saves = Math.round(likes * 0.24);
-
+    // 3. Aucune source fiable : AUCUNE donnée inventée — on conserve les compteurs existants (ou 0)
+    const prev = options?.previousMetrics ?? {
+      views: 0,
+      likes: 0,
+      comments: 0,
+      shares: 0,
+      saves: 0,
+    };
+    const { views, likes, comments, shares, saves } = prev;
     return {
       platform,
       titleOrHook:
@@ -275,7 +298,7 @@ export class SocialScraperService {
     };
   }
 
-  private static extractCleanHookFromUrl(
+  static extractCleanHookFromUrl(
     url: string,
     platform: SocialPlatformType
   ): string {

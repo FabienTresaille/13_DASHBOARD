@@ -35,6 +35,46 @@ import type {
   PaymentStatusKey,
 } from "@/lib/seed-data";
 import type { ModuleTypeKey } from "@/modules/types";
+import { SocialScraperService } from "@/services/social-scraper.service";
+
+async function enqueueSocialSyncJob(
+  postId?: string,
+  triggeredBy: string = "ui-manual"
+): Promise<boolean> {
+  try {
+    const { Queue } = await import("bullmq");
+    const IORedis = (await import("ioredis")).default;
+    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+    const connection = new IORedis(redisUrl, {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 650,
+      enableOfflineQueue: false,
+      retryStrategy: () => null,
+    });
+    connection.on("error", () => {});
+
+    let queued = false;
+    await Promise.race([
+      (async () => {
+        const queue = new Queue("pulse-kpi-sync", { connection });
+        await queue.add(
+          "sync-social-metrics",
+          { triggeredBy, ...(postId ? { postId } : {}) },
+          { removeOnComplete: 50, removeOnFail: 100 }
+        );
+        queued = true;
+        await queue.close();
+      })(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Redis timeout")), 750)
+      ),
+    ]);
+    await connection.quit().catch(() => {});
+    return queued;
+  } catch {
+    return false;
+  }
+}
 
 export async function setActiveWorkspaceAction(workspace: WorkspaceFilter) {
   const cookieStore = await cookies();
@@ -274,20 +314,41 @@ export async function addTrackedPostAction(
   clientId: string,
   formData: FormData
 ) {
-  const postUrl = String(formData.get("postUrl") || "").trim();
-  if (!postUrl) return;
+  const rawUrl = String(formData.get("postUrl") || "").trim();
+  if (!rawUrl) return;
+
+  // 1. Normalisation automatique de l'URL (ex: Instagram /reels/ -> /reel/ et suppression ?igsh=...)
+  const postUrl = SocialScraperService.normalizePostUrl(rawUrl);
 
   const workspaceSlug = (formData.get("workspaceSlug") ||
     "ALSEK") as WorkspaceSlugType;
   const customTitle =
     String(formData.get("titleOrHook") || "").trim() || undefined;
 
-  await dbAddTrackedPostByUrl({
+  const parseOptionalCounter = (key: string): number => {
+    const val = formData.get(key);
+    if (val === null || val === "") return 0;
+    const n = Number(val);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  };
+
+  // 2. Création avec compteurs initialisés à 0 (zéro fausse donnée)
+  const postId = await dbAddTrackedPostByUrl({
     clientId,
     workspaceSlug,
     postUrl,
     customTitle,
+    initialStats: {
+      views: parseOptionalCounter("views"),
+      likes: parseOptionalCounter("likes"),
+      comments: parseOptionalCounter("comments"),
+      shares: parseOptionalCounter("shares"),
+      saves: parseOptionalCounter("saves"),
+    },
   });
+
+  // 3. Déclenchement immédiat du job BullMQ ciblé sur ce post
+  await enqueueSocialSyncJob(postId, "post-created");
 
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/dashboard/content");
@@ -528,49 +589,19 @@ export async function getWorkspaceKpisAction(
 export async function triggerSocialSyncAction(
   postId?: string
 ): Promise<{ ok: boolean; queued: boolean; syncedCount: number }> {
-  let queued = false;
+  // 1. Envoi du job `sync-social-metrics` au Worker BullMQ (Redis)
+  const queued = await enqueueSocialSyncJob(postId, "ui-manual");
 
-  // 1. Tentative d'envoi du job `sync-social-metrics` au Worker BullMQ (Redis)
-  try {
-    const { Queue } = await import("bullmq");
-    const IORedis = (await import("ioredis")).default;
-    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
-    const connection = new IORedis(redisUrl, {
-      maxRetriesPerRequest: 1,
-      connectTimeout: 650,
-      enableOfflineQueue: false,
-      retryStrategy: () => null,
-    });
-    connection.on("error", () => {});
-
-    await Promise.race([
-      (async () => {
-        const queue = new Queue("pulse-kpi-sync", { connection });
-        await queue.add(
-          "sync-social-metrics",
-          { triggeredBy: "ui-manual", ...(postId ? { postId } : {}) },
-          { removeOnComplete: 50, removeOnFail: 100 }
-        );
-        queued = true;
-        await queue.close();
-      })(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Redis timeout")), 750)
-      ),
-    ]);
-    await connection.quit().catch(() => {});
-  } catch {
-    // Fallback silencieux si Redis n'est pas joignable en local
-  }
-
-  // 2. Rafraîchissement direct pour retour immédiat dans l'interface
+  // 2. Si Redis n'est pas joignable (ex: dev local sans Docker), rafraîchissement direct
   const state = await loadDatabaseState();
   const targetPosts = postId
     ? state.trackedPosts.filter((p) => p.id === postId)
     : state.trackedPosts.filter((p) => p.isActiveTrack);
 
-  for (const post of targetPosts) {
-    await dbRefreshOrUpdatePostMetrics(post.id);
+  if (!queued) {
+    for (const post of targetPosts) {
+      await dbRefreshOrUpdatePostMetrics(post.id);
+    }
   }
 
   revalidatePath("/dashboard/content");

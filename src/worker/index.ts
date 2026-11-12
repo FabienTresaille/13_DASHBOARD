@@ -2,6 +2,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import IORedis from "ioredis";
 import { PrismaClient, Prisma } from "@prisma/client";
 import { SocialScraperService } from "../services/social-scraper.service";
+import { fetchInstagramReelViaApify } from "./apify-instagram";
 import { getPluginByType } from "../modules/registry";
 import type { ModuleTypeKey } from "../modules/types";
 
@@ -62,20 +63,91 @@ export async function syncSocialMetrics(onlyPostId?: string) {
 
   for (const post of activePosts) {
     try {
-      const oembed = await fetchOEmbed(post.platform, post.postUrl);
-      const scraped = await SocialScraperService.fetchPostMetrics(post.postUrl);
+      const normalizedUrl = SocialScraperService.normalizePostUrl(post.postUrl);
+      const currentMetrics = {
+        views: post.views ?? 0,
+        likes: post.likes ?? 0,
+        comments: post.comments ?? 0,
+        shares: post.shares ?? 0,
+        saves: post.saves ?? 0,
+      };
+
+      const apifyToken = process.env.APIFY_API_TOKEN;
+
+      // 1. Connecteur dédié Apify Instagram Reel Scraper (`apify~instagram-reel-scraper`)
+      if (
+        post.platform === "INSTAGRAM" &&
+        apifyToken &&
+        apifyToken.trim().length > 0
+      ) {
+        const igData = await fetchInstagramReelViaApify(
+          normalizedUrl,
+          currentMetrics,
+          apifyToken
+        );
+
+        if (igData) {
+          const engagementRate =
+            SocialScraperService.computeEngagementRate(igData);
+
+          await prisma.trackedPost.update({
+            where: { id: post.id },
+            data: {
+              postUrl: normalizedUrl,
+              views: igData.views,
+              likes: igData.likes,
+              comments: igData.comments,
+              shares: igData.shares,
+              saves: igData.saves,
+              ...(igData.thumbnailUrl
+                ? { thumbnailUrl: igData.thumbnailUrl }
+                : {}),
+              ...(igData.caption && !post.titleOrHook
+                ? { titleOrHook: igData.caption }
+                : {}),
+              lastSyncedAt: new Date(),
+            },
+          });
+
+          await prisma.postMetricSnapshot.create({
+            data: {
+              postId: post.id,
+              views: igData.views,
+              likes: igData.likes,
+              comments: igData.comments,
+              shares: igData.shares,
+              saves: igData.saves,
+              engagementRate,
+            },
+          });
+
+          updated++;
+          console.log(
+            `✅ Post Instagram ${post.id} synchronisé via Apify : ${igData.views} vues, ${igData.likes} likes`
+          );
+          continue;
+        }
+      }
+
+      // 2. Autres plateformes ou fallback OpenGraph / oEmbed
+      const oembed = await fetchOEmbed(post.platform, normalizedUrl);
+      const scraped = await SocialScraperService.fetchPostMetrics(
+        normalizedUrl,
+        { previousMetrics: currentMetrics }
+      );
       const hasRealCounters = scraped.source !== "SMART_ESTIMATION";
+      const resolvedThumbnail =
+        scraped.thumbnailUrl || oembed?.thumbnailUrl || post.thumbnailUrl;
 
       await prisma.trackedPost.update({
         where: { id: post.id },
         data: {
+          postUrl: normalizedUrl,
           lastSyncedAt: new Date(),
           ...(oembed?.title && !post.titleOrHook
             ? { titleOrHook: oembed.title }
             : {}),
-          ...(oembed?.thumbnailUrl && !post.thumbnailUrl
-            ? { thumbnailUrl: oembed.thumbnailUrl }
-            : {}),
+          ...(resolvedThumbnail ? { thumbnailUrl: resolvedThumbnail } : {}),
           ...(hasRealCounters
             ? {
                 views: scraped.views,

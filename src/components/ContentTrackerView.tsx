@@ -142,6 +142,9 @@ export function ContentTrackerView({
 
   // État Synchronisation BullMQ
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [failedThumbIds, setFailedThumbIds] = useState<Record<string, boolean>>(
+    {}
+  );
 
   // Modale Ajout Publication (addTrackedPostAction)
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -469,12 +472,20 @@ export function ContentTrackerView({
                   className={`relative aspect-[9/16] w-full bg-gradient-to-b ${pMeta.gradientBg} p-4 flex flex-col justify-between overflow-hidden`}
                 >
                   {/* Image miniature si présente */}
-                  {post.thumbnailUrl && (
+                  {post.thumbnailUrl && !failedThumbIds[post.id] && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={post.thumbnailUrl}
                       alt={post.titleOrHook || "Miniature vidéo"}
-                      className="absolute inset-0 h-full w-full object-cover opacity-45 group-hover:scale-105 transition duration-500"
+                      referrerPolicy="no-referrer"
+                      loading="lazy"
+                      onError={() =>
+                        setFailedThumbIds((prev) => ({
+                          ...prev,
+                          [post.id]: true,
+                        }))
+                      }
+                      className="absolute inset-0 h-full w-full object-cover opacity-55 group-hover:scale-105 transition duration-500"
                     />
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/40 to-black/30" />
