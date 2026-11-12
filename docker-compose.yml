@@ -60,16 +60,17 @@ services:
       GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
       APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
     networks:
-      - traefik-net
+      - edge-public-net
       - pulse-internal
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=traefik-net"
+      - "traefik.docker.network=edge-public-net"
       # Routage Multi-Domaine vers le même conteneur (Alsek + Vitrine Caladoise)
-      - "traefik.http.routers.alsek-pulse.rule=Host(`${DOMAIN_ALSEK:-app.alsek.fr}`) || Host(`${DOMAIN_VITRINE:-pro.vitrine-caladoise.fr}`)"
-      - "traefik.http.routers.alsek-pulse.entrypoints=websecure"
-      - "traefik.http.routers.alsek-pulse.tls.certresolver=letsencrypt"
-      - "traefik.http.services.alsek-pulse.loadbalancer.server.port=3000"
+      - "traefik.http.routers.pulse.rule=Host(`${DOMAIN_ALSEK:-app.alsek.fr}`) || Host(`${DOMAIN_VITRINE:-pro.vitrine-caladoise.fr}`)"
+      - "traefik.http.routers.pulse.entrypoints=websecure"
+      - "traefik.http.routers.pulse.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.pulse.middlewares=sec-headers@file"
+      - "traefik.http.services.pulse.loadbalancer.server.port=3000"
 
   # 4. Worker Background (Cron Jobs : Tracking des posts, Avis GMB, Veille)
   pulse-worker:
@@ -97,7 +98,7 @@ volumes:
   pulse_redisdata:
 
 networks:
-  traefik-net:
+  edge-public-net:
     external: true
   pulse-internal:
     driver: bridge
