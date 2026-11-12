@@ -6,53 +6,118 @@ import { getPluginByType } from "../modules/registry";
 import type { ModuleTypeKey } from "../modules/types";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-const KPI_QUEUE_NAME = "pulse-kpi-sync";
+export const KPI_QUEUE_NAME = "pulse-kpi-sync";
+export const SYNC_SOCIAL_JOB = "sync-social-metrics";
+const LEGACY_SYNC_JOB = "sync-tracked-posts-kpis";
 
 const prisma = new PrismaClient();
 
-async function syncAllActivePosts() {
-  console.log("🔄 [BullMQ Worker] Démarrage du scraping périodique des publications trackées...");
+interface OEmbedData {
+  title: string | null;
+  thumbnailUrl: string | null;
+}
+
+/** Métadonnées publiques via oEmbed (YouTube / TikTok / Facebook publics). Retourne null si indisponible. */
+async function fetchOEmbed(
+  platform: string,
+  postUrl: string
+): Promise<OEmbedData | null> {
+  const endpoints: Record<string, string> = {
+    YOUTUBE: `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(postUrl)}`,
+    TIKTOK: `https://www.tiktok.com/oembed?url=${encodeURIComponent(postUrl)}`,
+  };
+  const endpoint = endpoints[platform];
+  if (!endpoint) return null;
+  try {
+    const res = await fetch(endpoint, { signal: AbortSignal.timeout(6000) });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      title?: string;
+      thumbnail_url?: string;
+    };
+    return {
+      title: json.title ? json.title.slice(0, 140) : null,
+      thumbnailUrl: json.thumbnail_url ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Job `sync-social-metrics` : parcourt les SocialPost (TrackedPost) actifs.
+ * - oEmbed → titre / miniature si manquants
+ * - OpenGraph / Apify → compteurs réels si disponibles (nouveau PostMetricSnapshot)
+ * - Sinon : AUCUNE donnée inventée, seul `lastSyncedAt` est mis à jour
+ *   (les chiffres restent modifiables en 1 clic depuis l'UI).
+ */
+export async function syncSocialMetrics(onlyPostId?: string) {
+  console.log("🔄 [BullMQ Worker] sync-social-metrics : démarrage...");
   const activePosts = await prisma.trackedPost.findMany({
-    where: { isActiveTrack: true },
-    include: {
-      metrics: {
-        orderBy: { recordedAt: "desc" },
-        take: 1,
-      },
-    },
+    where: { isActiveTrack: true, ...(onlyPostId ? { id: onlyPostId } : {}) },
   });
 
+  let updated = 0;
+  let touched = 0;
+
   for (const post of activePosts) {
-    const lastMetric = post.metrics[0];
-    const scraped = await SocialScraperService.fetchPostMetrics(post.postUrl, {
-      customTitle: post.titleOrHook || undefined,
-      previousMetrics: lastMetric
-        ? {
-            views: lastMetric.views,
-            likes: lastMetric.likes,
-            comments: lastMetric.comments,
-            shares: lastMetric.shares,
-            saves: lastMetric.saves,
-          }
-        : undefined,
-    });
+    try {
+      const oembed = await fetchOEmbed(post.platform, post.postUrl);
+      const scraped = await SocialScraperService.fetchPostMetrics(post.postUrl);
+      const hasRealCounters = scraped.source !== "SMART_ESTIMATION";
 
-    await prisma.postMetricSnapshot.create({
-      data: {
-        postId: post.id,
-        views: scraped.views,
-        likes: scraped.likes,
-        comments: scraped.comments,
-        shares: scraped.shares,
-        saves: scraped.saves,
-        engagementRate: scraped.engagementRate,
-      },
-    });
+      await prisma.trackedPost.update({
+        where: { id: post.id },
+        data: {
+          lastSyncedAt: new Date(),
+          ...(oembed?.title && !post.titleOrHook
+            ? { titleOrHook: oembed.title }
+            : {}),
+          ...(oembed?.thumbnailUrl && !post.thumbnailUrl
+            ? { thumbnailUrl: oembed.thumbnailUrl }
+            : {}),
+          ...(hasRealCounters
+            ? {
+                views: scraped.views,
+                likes: scraped.likes,
+                comments: scraped.comments,
+                shares: scraped.shares,
+                saves: scraped.saves,
+              }
+            : {}),
+        },
+      });
 
-    console.log(
-      `✅ [BullMQ Worker] Post ${post.id} (${post.platform}) mis à jour : ${scraped.views} vues (${scraped.engagementRate}% eng.)`
-    );
+      if (hasRealCounters) {
+        await prisma.postMetricSnapshot.create({
+          data: {
+            postId: post.id,
+            views: scraped.views,
+            likes: scraped.likes,
+            comments: scraped.comments,
+            shares: scraped.shares,
+            saves: scraped.saves,
+            engagementRate: scraped.engagementRate,
+          },
+        });
+        updated++;
+        console.log(
+          `✅ Post ${post.id} (${post.platform}) : ${scraped.views} vues via ${scraped.source}`
+        );
+      } else {
+        touched++;
+        console.log(
+          `⏱️  Post ${post.id} (${post.platform}) : compteurs non publics, lastSyncedAt mis à jour`
+        );
+      }
+    } catch (err) {
+      console.error(`⚠️ Post ${post.id} ignoré :`, (err as Error).message);
+    }
   }
+
+  console.log(
+    `🏁 sync-social-metrics terminé : ${updated} mis à jour, ${touched} horodatés, ${activePosts.length} total.`
+  );
 }
 
 async function runEnabledClientAutomations() {
@@ -103,9 +168,18 @@ async function bootstrapWorker() {
 
   const kpiQueue = new Queue(KPI_QUEUE_NAME, { connection });
 
-  // Planification Cron : Actualisation des vues toutes les 6 heures
+  // Nettoyage : supprime l'ancien job répétable (remplacé par sync-social-metrics)
+  const repeatables = await kpiQueue.getRepeatableJobs();
+  for (const r of repeatables) {
+    if (r.name === LEGACY_SYNC_JOB) {
+      await kpiQueue.removeRepeatableByKey(r.key);
+    }
+  }
+
+  // Planification Cron : synchronisation des métriques sociales toutes les 6 heures
+  // (déclenchable manuellement : npm run worker:sync)
   await kpiQueue.add(
-    "sync-tracked-posts-kpis",
+    SYNC_SOCIAL_JOB,
     { triggeredBy: "cron-6h" },
     {
       repeat: { pattern: "0 */6 * * *" },
@@ -128,8 +202,10 @@ async function bootstrapWorker() {
   const worker = new Worker(
     KPI_QUEUE_NAME,
     async (job: Job) => {
-      if (job.name === "sync-tracked-posts-kpis") {
-        await syncAllActivePosts();
+      if (job.name === SYNC_SOCIAL_JOB) {
+        await syncSocialMetrics(
+          typeof job.data?.postId === "string" ? job.data.postId : undefined
+        );
       } else if (job.name === "run-enabled-client-modules") {
         await runEnabledClientAutomations();
       }

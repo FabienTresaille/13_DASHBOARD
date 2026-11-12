@@ -19,7 +19,15 @@ import {
   dbUpdateClientModuleConfig,
   dbTriggerModuleExecution,
   dbApproveAutomationEvent,
+  dbUpdateCommercialEntry,
+  dbSetPaymentStatus,
+  dbUpdatePostStats,
+  dbUpsertClientRoiMetric,
+  getWorkspaceKpis,
+  loadDatabaseState,
   type WorkspaceFilter,
+  type WorkspaceKpis,
+  type OfferTypeKey,
 } from "@/lib/db";
 import type {
   WorkspaceSlugType,
@@ -197,6 +205,9 @@ export async function addCommercialEntryAction(
 
   const workspaceSlug = (formData.get("workspaceSlug") ||
     "ALSEK") as WorkspaceSlugType;
+  const offerRaw = String(formData.get("offer") || "").trim() as
+    | OfferTypeKey
+    | "";
   const billingType = (formData.get("billingType") ||
     "ONE_SHOT") as BillingTypeKey;
   const amountSoldHt = Number(formData.get("amountSoldHt") || 0);
@@ -212,6 +223,7 @@ export async function addCommercialEntryAction(
     clientId,
     workspaceSlug,
     productName,
+    offer: offerRaw || undefined,
     billingType,
     amountSoldHt,
     paymentStatus,
@@ -223,6 +235,7 @@ export async function addCommercialEntryAction(
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
   revalidatePath("/clients");
+  revalidatePath("/dashboard/billing");
 }
 
 export async function cyclePaymentStatusAction(
@@ -277,6 +290,8 @@ export async function addTrackedPostAction(
   });
 
   revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/content");
+  revalidatePath("/dashboard/billing");
   revalidatePath("/");
 }
 
@@ -293,6 +308,8 @@ export async function refreshPostMetricsAction(
 ) {
   await dbRefreshOrUpdatePostMetrics(postId, manualOverride);
   revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/content");
+  revalidatePath("/dashboard/billing");
   revalidatePath("/");
 }
 
@@ -302,6 +319,8 @@ export async function deleteTrackedPostAction(
 ) {
   await dbDeleteTrackedPost(postId);
   revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/content");
+  revalidatePath("/dashboard/billing");
   revalidatePath("/");
 }
 
@@ -365,4 +384,199 @@ export async function approveAutomationEventAction(
   await dbApproveAutomationEvent(eventId);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
+}
+
+// ============================================================================
+// SPRINT 2 : CRUD FACTURATION, STATS VIDÉOS, KPIs WORKSPACE, ROI MENSUEL
+// ============================================================================
+
+const PAYMENT_STATUSES: PaymentStatusKey[] = ["PENDING", "PAID", "OVERDUE"];
+const BILLING_TYPES: BillingTypeKey[] = ["ONE_SHOT", "RECURRING_MRR"];
+
+function nonNegative(n: unknown): number | null {
+  const v = Number(n);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+export async function updateCommercialEntryAction(
+  entryId: string,
+  clientId: string,
+  patch: {
+    productName?: string;
+    offer?: OfferTypeKey;
+    billingType?: BillingTypeKey;
+    amountSoldHt?: number;
+    paymentStatus?: PaymentStatusKey;
+    notes?: string | null;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const clean: typeof patch = {};
+  if (patch.productName !== undefined) {
+    const name = patch.productName.trim();
+    if (!name) return { ok: false, error: "Nom de prestation requis" };
+    clean.productName = name;
+  }
+  if (patch.offer !== undefined) {
+    clean.offer = patch.offer;
+  }
+  if (patch.billingType !== undefined) {
+    if (!BILLING_TYPES.includes(patch.billingType))
+      return { ok: false, error: "Type de facturation invalide" };
+    clean.billingType = patch.billingType;
+  }
+  if (patch.amountSoldHt !== undefined) {
+    const amount = nonNegative(patch.amountSoldHt);
+    if (amount === null) return { ok: false, error: "Montant invalide" };
+    clean.amountSoldHt = amount;
+  }
+  if (patch.paymentStatus !== undefined) {
+    if (!PAYMENT_STATUSES.includes(patch.paymentStatus))
+      return { ok: false, error: "Statut invalide" };
+    clean.paymentStatus = patch.paymentStatus;
+  }
+  if (patch.notes !== undefined) clean.notes = patch.notes;
+
+  await dbUpdateCommercialEntry(entryId, clean);
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/billing");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+export async function setPaymentStatusAction(
+  entryId: string,
+  clientId: string,
+  status: PaymentStatusKey
+): Promise<{ ok: boolean; error?: string }> {
+  if (!PAYMENT_STATUSES.includes(status))
+    return { ok: false, error: "Statut invalide" };
+  await dbSetPaymentStatus(entryId, status);
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/billing");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+export async function updatePostStatsAction(
+  postId: string,
+  clientId: string,
+  stats: {
+    views: number;
+    likes: number;
+    comments: number;
+    shares?: number;
+    saves?: number;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const views = nonNegative(stats.views);
+  const likes = nonNegative(stats.likes);
+  const comments = nonNegative(stats.comments);
+  const shares = nonNegative(stats.shares ?? 0);
+  const saves = nonNegative(stats.saves ?? 0);
+  if (
+    views === null ||
+    likes === null ||
+    comments === null ||
+    shares === null ||
+    saves === null
+  ) {
+    return { ok: false, error: "Statistiques invalides" };
+  }
+  await dbUpdatePostStats(postId, { views, likes, comments, shares, saves });
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/content");
+  revalidatePath("/dashboard/billing");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+export async function upsertClientRoiMetricAction(
+  clientId: string,
+  input: {
+    month: string; // "YYYY-MM"
+    leadsGenerated: number;
+    estimatedRevenue: number;
+    notes?: string;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month))
+    return { ok: false, error: "Mois invalide (attendu YYYY-MM)" };
+  const leads = nonNegative(input.leadsGenerated);
+  const revenue = nonNegative(input.estimatedRevenue);
+  if (leads === null || revenue === null)
+    return { ok: false, error: "Valeurs invalides" };
+
+  await dbUpsertClientRoiMetric({
+    clientId,
+    month: new Date(`${input.month}-01T00:00:00.000Z`),
+    leadsGenerated: Math.round(leads),
+    estimatedRevenue: revenue,
+    notes: input.notes,
+  });
+  revalidatePath(`/clients/${clientId}`);
+  revalidatePath("/dashboard/billing");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+export async function getWorkspaceKpisAction(
+  workspace: WorkspaceFilter
+): Promise<WorkspaceKpis> {
+  return getWorkspaceKpis(workspace);
+}
+
+export async function triggerSocialSyncAction(
+  postId?: string
+): Promise<{ ok: boolean; queued: boolean; syncedCount: number }> {
+  let queued = false;
+
+  // 1. Tentative d'envoi du job `sync-social-metrics` au Worker BullMQ (Redis)
+  try {
+    const { Queue } = await import("bullmq");
+    const IORedis = (await import("ioredis")).default;
+    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+    const connection = new IORedis(redisUrl, {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 650,
+      enableOfflineQueue: false,
+      retryStrategy: () => null,
+    });
+    connection.on("error", () => {});
+
+    await Promise.race([
+      (async () => {
+        const queue = new Queue("pulse-kpi-sync", { connection });
+        await queue.add(
+          "sync-social-metrics",
+          { triggeredBy: "ui-manual", ...(postId ? { postId } : {}) },
+          { removeOnComplete: 50, removeOnFail: 100 }
+        );
+        queued = true;
+        await queue.close();
+      })(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Redis timeout")), 750)
+      ),
+    ]);
+    await connection.quit().catch(() => {});
+  } catch {
+    // Fallback silencieux si Redis n'est pas joignable en local
+  }
+
+  // 2. Rafraîchissement direct pour retour immédiat dans l'interface
+  const state = await loadDatabaseState();
+  const targetPosts = postId
+    ? state.trackedPosts.filter((p) => p.id === postId)
+    : state.trackedPosts.filter((p) => p.isActiveTrack);
+
+  for (const post of targetPosts) {
+    await dbRefreshOrUpdatePostMetrics(post.id);
+  }
+
+  revalidatePath("/dashboard/content");
+  revalidatePath("/dashboard/billing");
+  revalidatePath("/clients");
+  revalidatePath("/");
+
+  return { ok: true, queued, syncedCount: targetPosts.length };
 }

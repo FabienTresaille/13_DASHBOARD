@@ -168,9 +168,9 @@ export function Client360View({ client }: Client360ViewProps) {
       : "commercial"
   );
   const [isPending, startTransition] = useTransition();
-  const [copiedBrand, setCopiedBrand] = useState<"alsek" | "vitrine" | null>(
-    null
-  );
+  const [copiedBrand, setCopiedBrand] = useState<
+    "alsek" | "vitrine" | "share" | null
+  >(null);
 
   // State Onglet 2 (Saisie Commerciale Zéro Friction + Optimistic UI)
   const defaultWsSlug: WorkspaceSlugType =
@@ -215,11 +215,17 @@ export function Client360View({ client }: Client360ViewProps) {
   >({});
   const [competitorInput, setCompetitorInput] = useState<string>("");
 
-  const copyPortalUrl = (brand: "alsek" | "vitrine") => {
+  const copyPortalUrl = (brand: "alsek" | "vitrine" | "share") => {
+    const origin =
+      typeof window !== "undefined"
+        ? window.location.origin
+        : "https://app.alsek.fr";
     const canonicalUrl =
-      brand === "alsek"
-        ? `https://app.alsek.fr/p/${client.shareToken}`
-        : `https://pro.vitrine-caladoise.fr/p/${client.shareToken}`;
+      brand === "share"
+        ? `${origin}/share/${client.shareToken}`
+        : brand === "alsek"
+          ? `https://app.alsek.fr/p/${client.shareToken}`
+          : `https://pro.vitrine-caladoise.fr/p/${client.shareToken}`;
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       navigator.clipboard.writeText(canonicalUrl);
     }
@@ -511,12 +517,41 @@ export function Client360View({ client }: Client360ViewProps) {
             </div>
           </div>
 
-          {/* Groupe des 3 Boutons d'Action Portail Public */}
+          {/* Groupe des Boutons d'Action Rapport & Portail Public */}
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
+              onClick={() => copyPortalUrl("share")}
+              className="inline-flex items-center gap-2 rounded-xl border border-[#00E676]/50 bg-[#1E3AFF]/25 hover:bg-[#1E3AFF]/40 px-3.5 py-2.5 text-xs font-extrabold text-[#00E676] transition cursor-pointer shadow-lg shadow-[#1E3AFF]/20"
+              title={`/share/${client.shareToken}`}
+            >
+              {copiedBrand === "share" ? (
+                <>
+                  <Check className="h-4 w-4 text-[#00E676]" />
+                  <span>Lien rapport copié !</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3.5 w-3.5 text-[#00E676]" />
+                  <span>Copier le lien rapport client</span>
+                </>
+              )}
+            </button>
+
+            <Link
+              href={`/share/${client.shareToken}`}
+              target="_blank"
+              className="inline-flex items-center gap-2 rounded-xl bg-white hover:bg-slate-200 px-4 py-2.5 text-xs font-extrabold text-slate-950 shadow-lg transition"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              <span>Ouvrir Rapport (/share)</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+
+            <button
+              type="button"
               onClick={() => copyPortalUrl("alsek")}
-              className="inline-flex items-center gap-2 rounded-xl border border-blue-500/40 bg-blue-600/15 hover:bg-blue-600/25 px-3.5 py-2.5 text-xs font-bold text-cyan-200 transition cursor-pointer"
+              className="inline-flex items-center gap-2 rounded-xl border border-blue-500/40 bg-blue-600/15 hover:bg-blue-600/25 px-3 py-2 text-xs font-bold text-cyan-200 transition cursor-pointer"
               title={`https://app.alsek.fr/p/${client.shareToken}`}
             >
               {copiedBrand === "alsek" ? (
@@ -527,7 +562,7 @@ export function Client360View({ client }: Client360ViewProps) {
               ) : (
                 <>
                   <Copy className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>Copier le lien Portail Alsek</span>
+                  <span>Portail Alsek</span>
                 </>
               )}
             </button>
@@ -535,7 +570,7 @@ export function Client360View({ client }: Client360ViewProps) {
             <button
               type="button"
               onClick={() => copyPortalUrl("vitrine")}
-              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 px-3.5 py-2.5 text-xs font-bold text-amber-200 transition cursor-pointer"
+              className="inline-flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 px-3 py-2 text-xs font-bold text-amber-200 transition cursor-pointer"
               title={`https://pro.vitrine-caladoise.fr/p/${client.shareToken}`}
             >
               {copiedBrand === "vitrine" ? (
@@ -546,20 +581,10 @@ export function Client360View({ client }: Client360ViewProps) {
               ) : (
                 <>
                   <Copy className="h-3.5 w-3.5 text-amber-400" />
-                  <span>Copier le lien Portail Vitrine</span>
+                  <span>Portail Vitrine</span>
                 </>
               )}
             </button>
-
-            <Link
-              href={`/p/${client.shareToken}?brand=${defaultPreviewBrand}`}
-              target="_blank"
-              className="inline-flex items-center gap-2 rounded-xl bg-white hover:bg-slate-200 px-4 py-2.5 text-xs font-extrabold text-slate-950 shadow-lg transition"
-            >
-              <Eye className="h-3.5 w-3.5" />
-              <span>Prévisualiser comme le client</span>
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
           </div>
         </div>
       </div>

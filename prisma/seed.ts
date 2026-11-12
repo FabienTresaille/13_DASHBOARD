@@ -2,8 +2,23 @@ import { PrismaClient, Prisma } from "@prisma/client";
 import * as fs from "fs";
 import * as path from "path";
 import { createInitialSeedData } from "../src/lib/seed-data";
+import { inferOffer } from "../src/lib/offers";
 
 const prisma = new PrismaClient();
+
+/** Dernier snapshot de métriques par post (pour initialiser les compteurs dénormalisés) */
+function latestMetricByPost(
+  metrics: ReturnType<typeof createInitialSeedData>["postMetrics"]
+) {
+  const map = new Map<string, (typeof metrics)[number]>();
+  for (const m of metrics) {
+    const prev = map.get(m.postId);
+    if (!prev || new Date(m.recordedAt) > new Date(prev.recordedAt)) {
+      map.set(m.postId, m);
+    }
+  }
+  return map;
+}
 
 async function seedPostgreSQL() {
   const data = createInitialSeedData();
@@ -133,7 +148,11 @@ async function seedPostgreSQL() {
   }
 
   console.log("💶 [ALSEK PULSE] Injection du Suivi Commercial & ROI (Zéro PDF)...");
+  const wsSlugById = new Map(data.workspaces.map((w) => [w.id, w.slug]));
   for (const sale of data.commercialEntries) {
+    const slug = wsSlugById.get(sale.workspaceId) ?? "ALSEK";
+    const offer = inferOffer(slug, sale.amountSoldHt);
+    const paidAt = sale.paymentStatus === "PAID" ? new Date(sale.periodDate) : null;
     await prisma.commercialEntry.upsert({
       where: { id: sale.id },
       update: {
@@ -144,6 +163,8 @@ async function seedPostgreSQL() {
         clientRevenueGenerated: sale.clientRevenueGenerated,
         leadsGenerated: sale.leadsGenerated,
         notes: sale.notes,
+        offer,
+        paidAt,
       },
       create: {
         id: sale.id,
@@ -156,18 +177,67 @@ async function seedPostgreSQL() {
         clientRevenueGenerated: sale.clientRevenueGenerated,
         leadsGenerated: sale.leadsGenerated,
         periodDate: new Date(sale.periodDate),
+        issuedAt: new Date(sale.periodDate),
+        paidAt,
+        offer,
         notes: sale.notes,
       },
     });
   }
 
+  console.log("📈 [ALSEK PULSE] Injection du ROI mensuel (ClientRoiMetric)...");
+  const roiByClientMonth = new Map<
+    string,
+    { clientId: string; month: Date; leads: number; revenue: number }
+  >();
+  for (const sale of data.commercialEntries) {
+    const d = new Date(sale.periodDate);
+    const month = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+    const key = `${sale.clientId}_${month.toISOString()}`;
+    const acc = roiByClientMonth.get(key) ?? {
+      clientId: sale.clientId,
+      month,
+      leads: 0,
+      revenue: 0,
+    };
+    acc.leads += sale.leadsGenerated;
+    acc.revenue += sale.clientRevenueGenerated;
+    roiByClientMonth.set(key, acc);
+  }
+  for (const roi of roiByClientMonth.values()) {
+    await prisma.clientRoiMetric.upsert({
+      where: {
+        clientId_month: { clientId: roi.clientId, month: roi.month },
+      },
+      update: { leadsGenerated: roi.leads, estimatedRevenue: roi.revenue },
+      create: {
+        clientId: roi.clientId,
+        month: roi.month,
+        leadsGenerated: roi.leads,
+        estimatedRevenue: roi.revenue,
+        notes: "Agrégat initial issu des ventes seedées",
+      },
+    });
+  }
+
   console.log("🎬 [ALSEK PULSE] Injection des Reels/TikToks/Shorts & Courbes Temporelles...");
+  const latestByPost = latestMetricByPost(data.postMetrics);
   for (const post of data.trackedPosts) {
+    const last = latestByPost.get(post.id);
+    const counters = {
+      views: last?.views ?? 0,
+      likes: last?.likes ?? 0,
+      comments: last?.comments ?? 0,
+      shares: last?.shares ?? 0,
+      saves: last?.saves ?? 0,
+      lastSyncedAt: last ? new Date(last.recordedAt) : null,
+    };
     await prisma.trackedPost.upsert({
       where: { id: post.id },
       update: {
         titleOrHook: post.titleOrHook,
         isActiveTrack: post.isActiveTrack,
+        ...counters,
       },
       create: {
         id: post.id,
@@ -179,6 +249,7 @@ async function seedPostgreSQL() {
         thumbnailUrl: post.thumbnailUrl,
         publishedAt: new Date(post.publishedAt),
         isActiveTrack: post.isActiveTrack,
+        ...counters,
       },
     });
   }
@@ -294,6 +365,13 @@ async function main() {
   seedLocalStoreFile();
 
   try {
+    const alreadySeeded = (await prisma.workspace.count()) > 0;
+    if (alreadySeeded && process.env.FORCE_SEED !== "1") {
+      console.log(
+        "⏭️  [ALSEK PULSE] Base déjà initialisée : seed ignoré pour préserver vos données (FORCE_SEED=1 pour forcer)."
+      );
+      return;
+    }
     await seedPostgreSQL();
     console.log("✅ [ALSEK PULSE] Seed PostgreSQL 16 terminé avec succès !");
   } catch (error) {

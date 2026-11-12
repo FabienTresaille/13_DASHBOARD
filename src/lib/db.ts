@@ -12,6 +12,7 @@ import {
   type WorkspaceRecord,
   type AuditSnapshotRecord,
   type CommercialEntryRecord,
+  type ClientRoiMetricRecord,
   type TrackedPostRecord,
   type PostMetricSnapshotRecord,
   type WebMetricSnapshotRecord,
@@ -46,7 +47,12 @@ function readLocalStore(): PulseDatabaseState {
   try {
     if (fs.existsSync(LOCAL_STORE_PATH)) {
       const raw = fs.readFileSync(LOCAL_STORE_PATH, "utf-8");
-      return JSON.parse(raw) as PulseDatabaseState;
+      const parsed = JSON.parse(raw) as PulseDatabaseState;
+      if (!parsed.roiMetrics) {
+        parsed.roiMetrics = createInitialSeedData().roiMetrics;
+        writeLocalStore(parsed);
+      }
+      return parsed;
     }
   } catch {
     // Re-créer en cas de fichier corrompu
@@ -99,6 +105,10 @@ function generateId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+import { inferOffer, type OfferTypeKey } from "./offers";
+export { inferOffer };
+export type { OfferTypeKey };
+
 /**
  * Charge l'état complet normalisé (depuis PostgreSQL si disponible, sinon depuis le store local persisté)
  */
@@ -113,6 +123,7 @@ export async function loadDatabaseState(): Promise<PulseDatabaseState> {
         commercialEntries,
         trackedPosts,
         postMetrics,
+        roiMetrics,
         webMetrics,
         clientModules,
         automationEvents,
@@ -124,6 +135,7 @@ export async function loadDatabaseState(): Promise<PulseDatabaseState> {
         prisma.commercialEntry.findMany({ orderBy: { periodDate: "desc" } }),
         prisma.trackedPost.findMany({ orderBy: { publishedAt: "desc" } }),
         prisma.postMetricSnapshot.findMany({ orderBy: { recordedAt: "asc" } }),
+        prisma.clientRoiMetric.findMany({ orderBy: { month: "desc" } }),
         prisma.webMetricSnapshot.findMany({ orderBy: { recordedAt: "asc" } }),
         prisma.clientModule.findMany(),
         prisma.automationEvent.findMany({ orderBy: { createdAt: "desc" } }),
@@ -151,14 +163,24 @@ export async function loadDatabaseState(): Promise<PulseDatabaseState> {
           commercialEntries: commercialEntries.map((ce) => ({
             ...ce,
             periodDate: ce.periodDate.toISOString(),
+            issuedAt: ce.issuedAt.toISOString(),
+            paidAt: ce.paidAt ? ce.paidAt.toISOString() : null,
           })),
           trackedPosts: trackedPosts.map((tp) => ({
             ...tp,
             publishedAt: tp.publishedAt.toISOString(),
+            lastSyncedAt: tp.lastSyncedAt
+              ? tp.lastSyncedAt.toISOString()
+              : null,
           })),
           postMetrics: postMetrics.map((pm) => ({
             ...pm,
             recordedAt: pm.recordedAt.toISOString(),
+          })),
+          roiMetrics: roiMetrics.map((rm) => ({
+            ...rm,
+            month: rm.month.toISOString(),
+            createdAt: rm.createdAt.toISOString(),
           })),
           webMetrics: webMetrics.map((wm) => ({
             ...wm,
@@ -194,6 +216,9 @@ export interface EnrichedTrackedPost extends TrackedPostRecord {
 export interface EnrichedCommercialEntry extends CommercialEntryRecord {
   workspace: WorkspaceRecord;
   clientName: string;
+  offer: OfferTypeKey;
+  issuedAt: string;
+  paidAt: string | null;
   roiMultiplier: number;
 }
 
@@ -209,6 +234,7 @@ export interface EnrichedClient360 extends ClientRecord {
   latestAudit: AuditSnapshotRecord | null;
   audits: AuditSnapshotRecord[];
   commercialEntries: EnrichedCommercialEntry[];
+  roiMetrics: ClientRoiMetricRecord[];
   trackedPosts: EnrichedTrackedPost[];
   webMetrics: WebMetricSnapshotRecord[];
   latestWebMetric: WebMetricSnapshotRecord | null;
@@ -284,8 +310,19 @@ export function buildEnrichedClient(
         ce.amountSoldHt > 0
           ? Number((ce.clientRevenueGenerated / ce.amountSoldHt).toFixed(1))
           : 0;
+      const offer = ce.offer || inferOffer(ws.slug, ce.amountSoldHt);
+      const issuedAt = ce.issuedAt || ce.periodDate;
+      const paidAt =
+        ce.paidAt !== undefined
+          ? ce.paidAt
+          : ce.paymentStatus === "PAID"
+            ? ce.periodDate
+            : null;
       return {
         ...ce,
+        offer,
+        issuedAt,
+        paidAt,
         workspace: ws,
         clientName: client.companyName,
         roiMultiplier,
@@ -294,6 +331,12 @@ export function buildEnrichedClient(
     .sort(
       (a, b) =>
         new Date(b.periodDate).getTime() - new Date(a.periodDate).getTime()
+    );
+
+  const roiMetrics = (state.roiMetrics || [])
+    .filter((rm) => rm.clientId === client.id)
+    .sort(
+      (a, b) => new Date(b.month).getTime() - new Date(a.month).getTime()
     );
 
   // Filtrage des posts selon le Workspace actif
@@ -328,6 +371,7 @@ export function buildEnrichedClient(
       };
       return {
         ...tp,
+        lastSyncedAt: tp.lastSyncedAt || latestMetric.recordedAt,
         workspace: ws,
         clientName: client.companyName,
         latestMetric,
@@ -441,6 +485,7 @@ export function buildEnrichedClient(
     latestAudit,
     audits: clientAudits,
     commercialEntries,
+    roiMetrics,
     trackedPosts,
     webMetrics,
     latestWebMetric,
@@ -922,6 +967,7 @@ export async function dbCreateCommercialEntry(input: {
   clientId: string;
   workspaceSlug: WorkspaceSlugType;
   productName: string;
+  offer?: OfferTypeKey;
   billingType: BillingTypeKey;
   amountSoldHt: number;
   paymentStatus: PaymentStatusKey;
@@ -935,18 +981,23 @@ export async function dbCreateCommercialEntry(input: {
     state.workspaces[0];
   const id = generateId("sale");
   const periodDate = new Date().toISOString();
+  const offer =
+    input.offer || inferOffer(input.workspaceSlug, input.amountSoldHt);
 
   state.commercialEntries.unshift({
     id,
     clientId: input.clientId,
     workspaceId: ws.id,
     productName: input.productName,
+    offer,
     billingType: input.billingType,
     amountSoldHt: input.amountSoldHt,
     paymentStatus: input.paymentStatus,
     clientRevenueGenerated: input.clientRevenueGenerated,
     leadsGenerated: input.leadsGenerated,
     periodDate,
+    issuedAt: periodDate,
+    paidAt: input.paymentStatus === "PAID" ? periodDate : null,
     notes: input.notes || null,
   });
 
@@ -970,6 +1021,8 @@ export async function dbCreateCommercialEntry(input: {
             clientRevenueGenerated: input.clientRevenueGenerated,
             leadsGenerated: input.leadsGenerated,
             notes: input.notes || null,
+            offer,
+            paidAt: input.paymentStatus === "PAID" ? new Date() : null,
           },
         });
       }
@@ -996,7 +1049,10 @@ export async function dbCyclePaymentStatus(entryId: string): Promise<void> {
     try {
       await prisma.commercialEntry.update({
         where: { id: entryId },
-        data: { paymentStatus: nextStatus },
+        data: {
+          paymentStatus: nextStatus,
+          paidAt: nextStatus === "PAID" ? new Date() : null,
+        },
       });
     } catch (e) {
       console.error("PG cyclePaymentStatus error:", e);
@@ -1152,6 +1208,12 @@ export async function dbAddTrackedPostByUrl(input: {
             titleOrHook: scraped.titleOrHook,
             thumbnailUrl: scraped.thumbnailUrl,
             isActiveTrack: true,
+            views: scraped.views,
+            likes: scraped.likes,
+            comments: scraped.comments,
+            shares: scraped.shares,
+            saves: scraped.saves,
+            lastSyncedAt: new Date(),
           },
         });
         for (const snap of snapshots) {
@@ -1259,6 +1321,17 @@ export async function dbRefreshOrUpdatePostMetrics(
           saves: newSnapshot.saves,
           engagementRate: newSnapshot.engagementRate,
           recordedAt: new Date(newSnapshot.recordedAt),
+        },
+      });
+      await prisma.trackedPost.update({
+        where: { id: postId },
+        data: {
+          views: newSnapshot.views,
+          likes: newSnapshot.likes,
+          comments: newSnapshot.comments,
+          shares: newSnapshot.shares,
+          saves: newSnapshot.saves,
+          lastSyncedAt: new Date(),
         },
       });
     } catch (e) {
@@ -1489,4 +1562,226 @@ export async function dbApproveAutomationEvent(eventId: string): Promise<void> {
       console.error("PG approveAutomationEvent error:", e);
     }
   }
+}
+
+// ============================================================================
+// SPRINT 2 : CRUD FACTURATION, STATS POSTS, KPIs WORKSPACE, ROI MENSUEL
+// ============================================================================
+
+export async function dbUpdateCommercialEntry(
+  entryId: string,
+  patch: {
+    productName?: string;
+    offer?: OfferTypeKey;
+    billingType?: BillingTypeKey;
+    amountSoldHt?: number;
+    paymentStatus?: PaymentStatusKey;
+    notes?: string | null;
+  }
+): Promise<void> {
+  const state = readLocalStore();
+  const entry = state.commercialEntries.find((e) => e.id === entryId);
+  if (entry) {
+    Object.assign(entry, patch);
+    if (patch.paymentStatus) {
+      entry.paidAt =
+        patch.paymentStatus === "PAID"
+          ? entry.paidAt || new Date().toISOString()
+          : null;
+    }
+    writeLocalStore(state);
+  }
+
+  if (await isPostgresOnline()) {
+    try {
+      const current = await prisma.commercialEntry.findUnique({
+        where: { id: entryId },
+        include: { workspace: true },
+      });
+      if (!current) return;
+      const amount = patch.amountSoldHt ?? current.amountSoldHt;
+      await prisma.commercialEntry.update({
+        where: { id: entryId },
+        data: {
+          ...patch,
+          offer:
+            patch.offer || inferOffer(current.workspace.slug, amount),
+          ...(patch.paymentStatus
+            ? {
+                paidAt:
+                  patch.paymentStatus === "PAID"
+                    ? (current.paidAt ?? new Date())
+                    : null,
+              }
+            : {}),
+        },
+      });
+    } catch (e) {
+      console.error("PG updateCommercialEntry error:", e);
+    }
+  }
+}
+
+export async function dbSetPaymentStatus(
+  entryId: string,
+  status: PaymentStatusKey
+): Promise<void> {
+  await dbUpdateCommercialEntry(entryId, { paymentStatus: status });
+}
+
+export async function dbUpdatePostStats(
+  postId: string,
+  stats: {
+    views: number;
+    likes: number;
+    comments: number;
+    shares?: number;
+    saves?: number;
+  }
+): Promise<void> {
+  await dbRefreshOrUpdatePostMetrics(postId, {
+    views: stats.views,
+    likes: stats.likes,
+    comments: stats.comments,
+    shares: stats.shares ?? 0,
+    saves: stats.saves ?? 0,
+  });
+}
+
+export async function dbUpsertClientRoiMetric(input: {
+  clientId: string;
+  month: Date;
+  leadsGenerated: number;
+  estimatedRevenue: number;
+  notes?: string;
+}): Promise<void> {
+  const month = new Date(
+    Date.UTC(input.month.getUTCFullYear(), input.month.getUTCMonth(), 1)
+  );
+  const monthIso = month.toISOString();
+
+  // Persistance dans le store local de secours
+  const state = readLocalStore();
+  if (!state.roiMetrics) state.roiMetrics = [];
+  const existingIdx = state.roiMetrics.findIndex(
+    (rm) => rm.clientId === input.clientId && rm.month.slice(0, 7) === monthIso.slice(0, 7)
+  );
+  if (existingIdx >= 0) {
+    state.roiMetrics[existingIdx] = {
+      ...state.roiMetrics[existingIdx],
+      leadsGenerated: input.leadsGenerated,
+      estimatedRevenue: input.estimatedRevenue,
+      notes: input.notes ?? null,
+    };
+  } else {
+    state.roiMetrics.unshift({
+      id: generateId("roi"),
+      clientId: input.clientId,
+      month: monthIso,
+      leadsGenerated: input.leadsGenerated,
+      estimatedRevenue: input.estimatedRevenue,
+      notes: input.notes ?? null,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  writeLocalStore(state);
+
+  if (!(await isPostgresOnline())) return;
+  try {
+    await prisma.clientRoiMetric.upsert({
+      where: { clientId_month: { clientId: input.clientId, month } },
+      update: {
+        leadsGenerated: input.leadsGenerated,
+        estimatedRevenue: input.estimatedRevenue,
+        notes: input.notes ?? null,
+      },
+      create: {
+        clientId: input.clientId,
+        month,
+        leadsGenerated: input.leadsGenerated,
+        estimatedRevenue: input.estimatedRevenue,
+        notes: input.notes ?? null,
+      },
+    });
+  } catch (e) {
+    console.error("PG upsertClientRoiMetric error:", e);
+  }
+}
+
+export interface WorkspaceKpis {
+  workspace: WorkspaceFilter;
+  /** CA facturé HT sur le mois courant (toutes factures émises) */
+  monthRevenueHt: number;
+  /** Part du CA du mois effectivement encaissée */
+  monthPaidHt: number;
+  /** MRR : somme des abonnements récurrents actifs (hors retard) */
+  mrrHt: number;
+  /** En attente d'encaissement (PENDING + OVERDUE) */
+  pendingRevenueHt: number;
+  /** Vidéos publiées durant le mois courant */
+  videosPublishedThisMonth: number;
+  /** Total des vues (dernier relevé de chaque vidéo) générées pour les clients */
+  totalViews: number;
+}
+
+export async function getWorkspaceKpis(
+  workspaceFilter: WorkspaceFilter = "ALL",
+  now: Date = new Date()
+): Promise<WorkspaceKpis> {
+  const state = await loadDatabaseState();
+  const wsById = new Map(state.workspaces.map((w) => [w.id, w]));
+  const inScope = (workspaceId: string) =>
+    workspaceFilter === "ALL" ||
+    wsById.get(workspaceId)?.slug === workspaceFilter;
+
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const isThisMonth = (iso: string) => {
+    const d = new Date(iso);
+    return d.getFullYear() === y && d.getMonth() === m;
+  };
+
+  const sales = state.commercialEntries.filter((e) => inScope(e.workspaceId));
+  const monthSales = sales.filter((e) => isThisMonth(e.periodDate));
+
+  const monthRevenueHt = monthSales.reduce((s, e) => s + e.amountSoldHt, 0);
+  const monthPaidHt = monthSales
+    .filter((e) => e.paymentStatus === "PAID")
+    .reduce((s, e) => s + e.amountSoldHt, 0);
+  const mrrHt = sales
+    .filter((e) => e.billingType === "RECURRING_MRR")
+    .reduce((s, e) => s + e.amountSoldHt, 0);
+  const pendingRevenueHt = sales
+    .filter(
+      (e) => e.paymentStatus === "PENDING" || e.paymentStatus === "OVERDUE"
+    )
+    .reduce((s, e) => s + e.amountSoldHt, 0);
+
+  const posts = state.trackedPosts.filter((p) => inScope(p.workspaceId));
+  const videosPublishedThisMonth = posts.filter((p) =>
+    isThisMonth(p.publishedAt)
+  ).length;
+
+  const latestViewsByPost = new Map<string, { at: number; views: number }>();
+  for (const snap of state.postMetrics) {
+    const at = new Date(snap.recordedAt).getTime();
+    const prev = latestViewsByPost.get(snap.postId);
+    if (!prev || at > prev.at) {
+      latestViewsByPost.set(snap.postId, { at, views: snap.views });
+    }
+  }
+  const totalViews = posts.reduce(
+    (s, p) => s + (latestViewsByPost.get(p.id)?.views ?? 0),
+    0
+  );
+
+  return {
+    workspace: workspaceFilter,
+    monthRevenueHt,
+    monthPaidHt,
+    mrrHt,
+    pendingRevenueHt,
+    videosPublishedThisMonth,
+    totalViews,
+  };
 }

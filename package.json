@@ -11,7 +11,8 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "worker": "tsx src/worker/index.ts"
+    "worker": "tsx src/worker/index.ts",
+    "worker:sync": "tsx src/worker/trigger.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -15,6 +15,9 @@ import {
   X,
   ArrowUpRight,
   Compass,
+  Receipt,
+  Film,
+  Share2,
 } from "lucide-react";
 import { setActiveWorkspaceAction } from "@/app/actions";
 import type { WorkspaceFilter } from "@/lib/db";
@@ -81,20 +84,21 @@ const WORKSPACE_THEMES: Record<
     sublabel: "Tech & Performance Agency",
     domain: "app.alsek.fr",
     tagline: "Production Reels, Création Web & Meta Ads B2B",
-    bgCanvas: "bg-[#0A0A0F]",
-    sidebarBg: "bg-[#07070C]/95",
-    headerBg: "bg-[#0A0A0F]/80",
+    bgCanvas: "bg-[#070913]",
+    sidebarBg: "bg-[#050710]/95",
+    headerBg: "bg-[#070913]/85",
     ambientGlow:
-      "radial-gradient(circle at 20% 0%, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.08) 45%, transparent 70%)",
-    accentHex: "#2563EB",
-    secondaryHex: "#06B6D4",
-    badgeBg: "bg-blue-600/15",
-    badgeBorder: "border-blue-500/40",
-    badgeText: "text-cyan-300",
-    dotColor: "bg-cyan-400",
+      "radial-gradient(circle at 20% 0%, rgba(30, 58, 255, 0.18), rgba(0, 230, 118, 0.08) 45%, transparent 70%)",
+    accentHex: "#1E3AFF",
+    secondaryHex: "#00E676",
+    badgeBg: "bg-[#1E3AFF]/15",
+    badgeBorder: "border-[#1E3AFF]/45",
+    badgeText: "text-[#00E676]",
+    dotColor: "bg-[#00E676]",
     ctaGradient:
-      "bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 shadow-blue-600/25",
-    activePillBg: "bg-gradient-to-r from-blue-600 to-cyan-500 text-white shadow-md",
+      "bg-gradient-to-r from-[#1E3AFF] to-[#00E676] hover:opacity-95 shadow-[#1E3AFF]/30",
+    activePillBg:
+      "bg-gradient-to-r from-[#1E3AFF] to-[#00E676] text-white shadow-md",
     logoUrl: "/logo-alsek.png",
   },
   VITRINE: {
@@ -102,20 +106,21 @@ const WORKSPACE_THEMES: Record<
     sublabel: "Média Local & Terroir Premium",
     domain: "pro.vitrine-caladoise.fr",
     tagline: "Ancrage Local Calade & Beaujolais • Commerces & Artisans",
-    bgCanvas: "bg-[#100C08]",
-    sidebarBg: "bg-[#0C0906]/95",
-    headerBg: "bg-[#100C08]/80",
+    bgCanvas: "bg-[#0C0714]",
+    sidebarBg: "bg-[#090510]/95",
+    headerBg: "bg-[#0C0714]/85",
     ambientGlow:
-      "radial-gradient(circle at 20% 0%, rgba(217, 119, 6, 0.15), rgba(234, 88, 12, 0.09) 45%, transparent 70%)",
-    accentHex: "#D97706",
-    secondaryHex: "#EA580C",
-    badgeBg: "bg-amber-500/15",
-    badgeBorder: "border-amber-500/40",
-    badgeText: "text-amber-300",
-    dotColor: "bg-amber-400",
+      "radial-gradient(circle at 20% 0%, rgba(75, 0, 130, 0.25), rgba(212, 175, 55, 0.12) 45%, transparent 70%)",
+    accentHex: "#D4AF37",
+    secondaryHex: "#4B0082",
+    badgeBg: "bg-[#4B0082]/30",
+    badgeBorder: "border-[#D4AF37]/45",
+    badgeText: "text-[#D4AF37]",
+    dotColor: "bg-[#D4AF37]",
     ctaGradient:
-      "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 shadow-amber-600/25",
-    activePillBg: "bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md",
+      "bg-gradient-to-r from-[#4B0082] to-[#D4AF37] hover:opacity-95 shadow-[#4B0082]/30",
+    activePillBg:
+      "bg-gradient-to-r from-[#4B0082] to-[#D4AF37] text-white shadow-md",
     logoUrl: "/logo-vitrine.png",
   },
 };
@@ -132,7 +137,7 @@ export function AppShell({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isNewClientOpen, setIsNewClientOpen] = useState(false);
 
-  if (pathname?.startsWith("/p/")) {
+  if (pathname?.startsWith("/p/") || pathname?.startsWith("/share/")) {
     return <>{children}</>;
   }
 
@@ -153,6 +158,18 @@ export function AppShell({
       href: "/",
       icon: LayoutDashboard,
       active: pathname === "/",
+    },
+    {
+      label: "Facturation & ROI",
+      href: "/dashboard/billing",
+      icon: Receipt,
+      active: pathname?.startsWith("/dashboard/billing"),
+    },
+    {
+      label: "Content Tracker 9:16",
+      href: "/dashboard/content",
+      icon: Film,
+      active: pathname?.startsWith("/dashboard/content"),
     },
     {
       label: "Portefeuille Clients 360°",
@@ -469,6 +486,17 @@ export function AppShell({
               Testez l&apos;interface vue par le commerçant sur son mobile :
             </p>
             <div className="space-y-1.5">
+              <Link
+                href="/share/bistrot-caladois"
+                target="_blank"
+                className="flex items-center justify-between rounded-xl border border-[#00E676]/40 bg-[#1E3AFF]/15 px-3 py-2 text-[11px] font-bold text-[#00E676] hover:bg-[#1E3AFF]/25 transition"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Share2 className="h-3 w-3" />
+                  Rapport Client (/share)
+                </span>
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
               <Link
                 href="/p/bistrot-caladois?brand=alsek"
                 target="_blank"

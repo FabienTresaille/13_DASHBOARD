@@ -18,6 +18,8 @@ import {
   CheckCircle2,
   Globe,
   Instagram,
+  Copy,
+  Check,
 } from "lucide-react";
 import type { EnrichedClient360, WorkspaceFilter } from "@/lib/db";
 import { toggleClientWorkspaceAction } from "@/app/actions";
@@ -51,6 +53,20 @@ export function ClientsDirectoryView({
     "ALL" | "ALSEK" | "VITRINE" | "DUAL"
   >("ALL");
   const [isNewClientOpen, setIsNewClientOpen] = useState(false);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  const handleCopyShareLink = (shareToken: string) => {
+    const origin =
+      typeof window !== "undefined"
+        ? window.location.origin
+        : "https://app.alsek.fr";
+    const url = `${origin}/share/${shareToken}`;
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(url);
+    }
+    setCopiedToken(shareToken);
+    setTimeout(() => setCopiedToken(null), 2200);
+  };
 
   const filteredClients = clients.filter((c) => {
     const q = search.toLowerCase().trim();
@@ -307,30 +323,39 @@ export function ClientsDirectoryView({
               </div>
 
               {/* Footer Actions */}
-              <div className="flex items-center justify-between border-t border-slate-800/80 bg-slate-900/60 px-5 py-3">
-                <div className="flex items-center gap-2">
-                  <Link
-                    href={`/p/${client.shareToken}?brand=alsek`}
-                    target="_blank"
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-400 hover:text-blue-300"
-                    title="Ouvrir le Portail Client sous la marque Alsek Marketing"
+              <div className="flex items-center justify-between border-t border-slate-800/80 bg-slate-900/60 px-5 py-3 gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleCopyShareLink(client.shareToken)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#00E676]/40 bg-[#1E3AFF]/20 hover:bg-[#1E3AFF]/35 px-2.5 py-1 text-[11px] font-bold text-[#00E676] transition cursor-pointer"
+                    title={`/share/${client.shareToken}`}
                   >
-                    Portail Alsek <ExternalLink className="h-3 w-3" />
-                  </Link>
-                  <span className="text-slate-700">|</span>
+                    {copiedToken === client.shareToken ? (
+                      <>
+                        <Check className="h-3 w-3" />
+                        Lien copié !
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3 w-3" />
+                        Copier le lien rapport client
+                      </>
+                    )}
+                  </button>
                   <Link
-                    href={`/p/${client.shareToken}?brand=vitrine`}
+                    href={`/share/${client.shareToken}`}
                     target="_blank"
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 hover:text-amber-300"
-                    title="Ouvrir le Portail Client sous la marque Vitrine Caladoise"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-300 hover:text-white"
+                    title="Ouvrir le Rapport Client Partageable (/share)"
                   >
-                    Portail Vitrine <ExternalLink className="h-3 w-3" />
+                    Ouvrir <ExternalLink className="h-3 w-3" />
                   </Link>
                 </div>
 
                 <Link
                   href={`/clients/${client.id}`}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-1.5 text-xs font-bold text-white transition"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-1.5 text-xs font-bold text-white transition shrink-0"
                 >
                   Fiche 360°
                   <ArrowRight className="h-3.5 w-3.5" />

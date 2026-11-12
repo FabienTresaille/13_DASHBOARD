@@ -45,6 +45,15 @@ enum ModuleType {
   CLARITY_UX_ALERTS     // Alertes comportementales Microsoft Clarity
 }
 
+// Catalogue d'offres (Sprint 2) : Alsek (Essentiel/Évolution/Maîtrise), Vitrine (Pack Média), Sur-mesure
+enum OfferType {
+  ESSENTIEL          // 160 €
+  EVOLUTION          // 300 €
+  MAITRISE           // 500 €
+  PACK_MEDIA_VITRINE
+  SUR_MESURE
+}
+
 model Workspace {
   id            String        @id @default(cuid())
   slug          WorkspaceSlug @unique
@@ -88,6 +97,7 @@ model Client {
   webMetrics        WebMetricSnapshot[]
   addonModules      ClientModule[]
   automationLogs    AutomationEvent[]
+  roiMetrics        ClientRoiMetric[]
 
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -140,8 +150,16 @@ model CommercialEntry {
   periodDate             DateTime      @default(now())
   notes                  String?
 
+  // Sprint 2 : traçabilité de facturation (Invoice / RevenueEntry)
+  offer                  OfferType     @default(SUR_MESURE)
+  issuedAt               DateTime      @default(now())
+  paidAt                 DateTime?     // Renseigné automatiquement quand le statut passe à PAID
+
   client                 Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   workspace              Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, periodDate])
+  @@index([clientId, paymentStatus])
 }
 
 // MODULE 3 : CONTENT TRACKER (Suivi par lien de publication)
@@ -156,9 +174,20 @@ model TrackedPost {
   publishedAt   DateTime       @default(now())
   isActiveTrack Boolean        @default(true)
 
+  // Sprint 2 : compteurs courants dénormalisés (le détail temporel reste dans PostMetricSnapshot)
+  views         Int            @default(0)
+  likes         Int            @default(0)
+  comments      Int            @default(0)
+  shares        Int            @default(0)
+  saves         Int            @default(0)
+  lastSyncedAt  DateTime?
+
   client        Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   metrics       PostMetricSnapshot[]
+
+  @@index([workspaceId, publishedAt])
+  @@index([isActiveTrack, lastSyncedAt])
 }
 
 model PostMetricSnapshot {
@@ -174,6 +203,20 @@ model PostMetricSnapshot {
 
   post           TrackedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
   @@index([postId, recordedAt])
+}
+
+// MODULE 2bis : ROI MENSUEL PAR CLIENT (leads & CA estimé, saisie rapide)
+model ClientRoiMetric {
+  id               String   @id @default(cuid())
+  clientId         String
+  month            DateTime // Premier jour du mois concerné
+  leadsGenerated   Int      @default(0)
+  estimatedRevenue Float    @default(0)
+  notes            String?
+  createdAt        DateTime @default(now())
+
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  @@unique([clientId, month])
 }
 
 // MODULE 4 : WEB, CLARITY & PIXEL METRICS

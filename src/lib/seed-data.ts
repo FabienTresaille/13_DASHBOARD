@@ -1,4 +1,5 @@
 import type { ModuleTypeKey } from "@/modules/types";
+import type { OfferTypeKey } from "./offers";
 
 export type WorkspaceSlugType = "ALSEK" | "VITRINE";
 export type ClientStatusType = "PROSPECT" | "ACTIVE" | "PAUSED" | "CHURNED";
@@ -51,13 +52,26 @@ export interface CommercialEntryRecord {
   clientId: string;
   workspaceId: string;
   productName: string;
+  offer?: OfferTypeKey;
   billingType: BillingTypeKey;
   amountSoldHt: number;
   paymentStatus: PaymentStatusKey;
   clientRevenueGenerated: number;
   leadsGenerated: number;
   periodDate: string;
+  issuedAt?: string;
+  paidAt?: string | null;
   notes: string | null;
+}
+
+export interface ClientRoiMetricRecord {
+  id: string;
+  clientId: string;
+  month: string;
+  leadsGenerated: number;
+  estimatedRevenue: number;
+  notes: string | null;
+  createdAt: string;
 }
 
 export interface PostMetricSnapshotRecord {
@@ -82,6 +96,7 @@ export interface TrackedPostRecord {
   thumbnailUrl: string | null;
   publishedAt: string;
   isActiveTrack: boolean;
+  lastSyncedAt?: string | null;
 }
 
 export interface WebMetricSnapshotRecord {
@@ -146,6 +161,7 @@ export interface PulseDatabaseState {
   commercialEntries: CommercialEntryRecord[];
   trackedPosts: TrackedPostRecord[];
   postMetrics: PostMetricSnapshotRecord[];
+  roiMetrics?: ClientRoiMetricRecord[];
   webMetrics: WebMetricSnapshotRecord[];
   clientModules: ClientModuleRecord[];
   automationEvents: AutomationEventRecord[];
@@ -414,12 +430,12 @@ export function createInitialSeedData(): PulseDatabaseState {
       id: "sale_bistrot_3",
       clientId: "client_bistrot_caladois",
       workspaceId: "ws_alsek",
-      productName: "Accompagnement Mensuel — 4 Reels + Meta Ads Local",
+      productName: "Offre Maîtrise — 4 Reels + Meta Ads Local",
       billingType: "RECURRING_MRR",
-      amountSoldHt: 1250,
+      amountSoldHt: 500,
       paymentStatus: "PAID",
-      clientRevenueGenerated: 9660,
-      leadsGenerated: 230,
+      clientRevenueGenerated: 4800,
+      leadsGenerated: 110,
       periodDate: "2026-11-01T09:00:00.000Z",
       notes: "Service complet vendredi & samedi soir grâce aux Reels géolocalisés 15km.",
     },
@@ -478,6 +494,19 @@ export function createInitialSeedData(): PulseDatabaseState {
       leadsGenerated: 120,
       periodDate: "2026-10-05T09:00:00.000Z",
       notes: "Soirées accords mets & vins complètes 3 semaines à l'avance.",
+    },
+    {
+      id: "sale_chai_4",
+      clientId: "client_chai_pierres_dorees",
+      workspaceId: "ws_alsek",
+      productName: "Offre Évolution — 2 Reels/mois + Gestion Avis Google",
+      billingType: "RECURRING_MRR",
+      amountSoldHt: 300,
+      paymentStatus: "PENDING",
+      clientRevenueGenerated: 1350,
+      leadsGenerated: 20,
+      periodDate: "2026-11-03T09:00:00.000Z",
+      notes: "Facture de novembre envoyée, paiement attendu sous 15 jours.",
     },
     {
       id: "sale_chai_3",
@@ -1104,6 +1133,72 @@ export function createInitialSeedData(): PulseDatabaseState {
     },
   ];
 
+  const roiMetrics: ClientRoiMetricRecord[] = [
+    {
+      id: "roi_bistrot_2026_09",
+      clientId: "client_bistrot_caladois",
+      month: "2026-09-01T00:00:00.000Z",
+      leadsGenerated: 84,
+      estimatedRevenue: 3528,
+      notes: "Réservations tables générées par le Reel côte de bœuf maturée.",
+      createdAt: "2026-09-30T18:00:00.000Z",
+    },
+    {
+      id: "roi_bistrot_2026_10",
+      clientId: "client_bistrot_caladois",
+      month: "2026-10-01T00:00:00.000Z",
+      leadsGenerated: 118,
+      estimatedRevenue: 4956,
+      notes: "Forte traction TikTok + Meta Ads local 15km autour de Villefranche.",
+      createdAt: "2026-10-31T18:00:00.000Z",
+    },
+    {
+      id: "roi_bistrot_2026_11",
+      clientId: "client_bistrot_caladois",
+      month: "2026-11-01T00:00:00.000Z",
+      leadsGenerated: 130,
+      estimatedRevenue: 5460,
+      notes: "Services complets vendredi & samedi soir sur les 2 premières semaines.",
+      createdAt: "2026-11-08T18:00:00.000Z",
+    },
+    {
+      id: "roi_celeste_2026_10",
+      clientId: "client_maison_celeste",
+      month: "2026-10-01T00:00:00.000Z",
+      leadsGenerated: 42,
+      estimatedRevenue: 2730,
+      notes: "Visites en boutique rue d'Anse suite au portrait commerçante.",
+      createdAt: "2026-10-31T18:00:00.000Z",
+    },
+    {
+      id: "roi_celeste_2026_11",
+      clientId: "client_maison_celeste",
+      month: "2026-11-01T00:00:00.000Z",
+      leadsGenerated: 55,
+      estimatedRevenue: 3575,
+      notes: "Lancement collection capsule Noël Caladois.",
+      createdAt: "2026-11-08T18:00:00.000Z",
+    },
+    {
+      id: "roi_chai_2026_10",
+      clientId: "client_chai_pierres_dorees",
+      month: "2026-10-01T00:00:00.000Z",
+      leadsGenerated: 95,
+      estimatedRevenue: 8075,
+      notes: "Commandes coffrets entreprises B2B et soirées dégustation.",
+      createdAt: "2026-10-31T18:00:00.000Z",
+    },
+    {
+      id: "roi_chai_2026_11",
+      clientId: "client_chai_pierres_dorees",
+      month: "2026-11-01T00:00:00.000Z",
+      leadsGenerated: 120,
+      estimatedRevenue: 10200,
+      notes: "Précommandes Beaujolais Nouveau & privatisations cave voûtée.",
+      createdAt: "2026-11-08T18:00:00.000Z",
+    },
+  ];
+
   return {
     workspaces,
     clients,
@@ -1112,6 +1207,7 @@ export function createInitialSeedData(): PulseDatabaseState {
     commercialEntries,
     trackedPosts,
     postMetrics,
+    roiMetrics,
     webMetrics,
     clientModules,
     automationEvents,
