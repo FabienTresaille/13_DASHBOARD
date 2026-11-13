@@ -36,6 +36,46 @@ import type {
 } from "@/lib/seed-data";
 import type { ModuleTypeKey } from "@/modules/types";
 import { SocialScraperService } from "@/services/social-scraper.service";
+import { auth, signIn, signOut } from "@/auth";
+import { AuthError } from "next-auth";
+
+async function requireAdminSession() {
+  const session = await auth();
+  if (!session?.user) {
+    throw new Error("Non autorisé");
+  }
+  return session;
+}
+
+export async function authenticateAdminAction(
+  email: string,
+  password: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
+    });
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof AuthError) {
+      return {
+        ok: false,
+        error: "Identifiants invalides. Vérifiez votre email et votre mot de passe.",
+      };
+    }
+    return {
+      ok: false,
+      error: "Identifiants invalides. Vérifiez votre email et votre mot de passe.",
+    };
+  }
+}
+
+export async function signOutAdminAction(): Promise<{ ok: boolean }> {
+  await signOut({ redirect: false });
+  return { ok: true };
+}
 
 async function enqueueSocialSyncJob(
   postId?: string,
@@ -77,6 +117,7 @@ async function enqueueSocialSyncJob(
 }
 
 export async function setActiveWorkspaceAction(workspace: WorkspaceFilter) {
+  await requireAdminSession();
   const cookieStore = await cookies();
   cookieStore.set("pulse_workspace", workspace, {
     path: "/",
@@ -86,6 +127,7 @@ export async function setActiveWorkspaceAction(workspace: WorkspaceFilter) {
 }
 
 export async function createClientAction(formData: FormData) {
+  await requireAdminSession();
   const companyName = String(formData.get("companyName") || "").trim();
   if (!companyName) return { ok: false, error: "Nom de l'entreprise requis" };
 
@@ -143,6 +185,7 @@ export async function toggleClientWorkspaceAction(
   clientId: string,
   workspaceSlug: WorkspaceSlugType
 ) {
+  await requireAdminSession();
   await dbToggleClientWorkspace(clientId, workspaceSlug);
   revalidatePath("/");
   revalidatePath("/clients");
@@ -153,6 +196,7 @@ export async function updateClientTrackingAction(
   clientId: string,
   formData: FormData
 ) {
+  await requireAdminSession();
   const companyName = String(formData.get("companyName") || "").trim();
   const sector = String(formData.get("sector") || "").trim();
   const city = String(formData.get("city") || "").trim();
@@ -201,6 +245,7 @@ export async function saveAuditSnapshotAction(
   clientId: string,
   formData: FormData
 ) {
+  await requireAdminSession();
   const isInitialT0 = formData.get("isInitialT0") === "true";
   const gmbRating = Number(formData.get("gmbRating") || 0) || null;
   const gmbReviewsCount = Number(formData.get("gmbReviewsCount") || 0) || null;
@@ -240,6 +285,7 @@ export async function addCommercialEntryAction(
   clientId: string,
   formData: FormData
 ) {
+  await requireAdminSession();
   const productName = String(formData.get("productName") || "").trim();
   if (!productName) return;
 
@@ -282,6 +328,7 @@ export async function cyclePaymentStatusAction(
   entryId: string,
   clientId?: string
 ) {
+  await requireAdminSession();
   await dbCyclePaymentStatus(entryId);
   if (clientId) revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
@@ -294,6 +341,7 @@ export async function updateCommercialRoiAction(
   clientRevenueGenerated: number,
   leadsGenerated: number
 ) {
+  await requireAdminSession();
   await dbUpdateCommercialRoi(entryId, clientRevenueGenerated, leadsGenerated);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
@@ -304,6 +352,7 @@ export async function deleteCommercialEntryAction(
   entryId: string,
   clientId: string
 ) {
+  await requireAdminSession();
   await dbDeleteCommercialEntry(entryId);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
@@ -314,6 +363,7 @@ export async function addTrackedPostAction(
   clientId: string,
   formData: FormData
 ) {
+  await requireAdminSession();
   const rawUrl = String(formData.get("postUrl") || "").trim();
   if (!rawUrl) return;
 
@@ -367,6 +417,7 @@ export async function refreshPostMetricsAction(
     saves: number;
   }
 ) {
+  await requireAdminSession();
   await dbRefreshOrUpdatePostMetrics(postId, manualOverride);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/dashboard/content");
@@ -378,6 +429,7 @@ export async function deleteTrackedPostAction(
   postId: string,
   clientId: string
 ) {
+  await requireAdminSession();
   await dbDeleteTrackedPost(postId);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/dashboard/content");
@@ -390,6 +442,7 @@ export async function addWebMetricSnapshotAction(
   clientId: string,
   formData: FormData
 ) {
+  await requireAdminSession();
   const sessionsCount = Number(formData.get("sessionsCount") || 0);
   const uniqueVisitors = Number(formData.get("uniqueVisitors") || 0);
   const pixelPageViews = Number(formData.get("pixelPageViews") || 0);
@@ -416,6 +469,7 @@ export async function toggleClientModuleAction(
   moduleType: ModuleTypeKey,
   isEnabled: boolean
 ) {
+  await requireAdminSession();
   await dbToggleClientModule(clientId, moduleType, isEnabled);
   revalidatePath(`/clients/${clientId}`);
 }
@@ -425,6 +479,7 @@ export async function updateClientModuleConfigAction(
   moduleType: ModuleTypeKey,
   configJson: Record<string, unknown>
 ) {
+  await requireAdminSession();
   await dbUpdateClientModuleConfig(clientId, moduleType, configJson);
   revalidatePath(`/clients/${clientId}`);
 }
@@ -433,6 +488,7 @@ export async function triggerModuleExecutionAction(
   clientId: string,
   moduleType: ModuleTypeKey
 ) {
+  await requireAdminSession();
   await dbTriggerModuleExecution(clientId, moduleType);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
@@ -442,6 +498,7 @@ export async function approveAutomationEventAction(
   eventId: string,
   clientId: string
 ) {
+  await requireAdminSession();
   await dbApproveAutomationEvent(eventId);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
@@ -471,6 +528,7 @@ export async function updateCommercialEntryAction(
     notes?: string | null;
   }
 ): Promise<{ ok: boolean; error?: string }> {
+  await requireAdminSession();
   const clean: typeof patch = {};
   if (patch.productName !== undefined) {
     const name = patch.productName.trim();
@@ -509,6 +567,7 @@ export async function setPaymentStatusAction(
   clientId: string,
   status: PaymentStatusKey
 ): Promise<{ ok: boolean; error?: string }> {
+  await requireAdminSession();
   if (!PAYMENT_STATUSES.includes(status))
     return { ok: false, error: "Statut invalide" };
   await dbSetPaymentStatus(entryId, status);
@@ -529,6 +588,7 @@ export async function updatePostStatsAction(
     saves?: number;
   }
 ): Promise<{ ok: boolean; error?: string }> {
+  await requireAdminSession();
   const views = nonNegative(stats.views);
   const likes = nonNegative(stats.likes);
   const comments = nonNegative(stats.comments);
@@ -560,6 +620,7 @@ export async function upsertClientRoiMetricAction(
     notes?: string;
   }
 ): Promise<{ ok: boolean; error?: string }> {
+  await requireAdminSession();
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month))
     return { ok: false, error: "Mois invalide (attendu YYYY-MM)" };
   const leads = nonNegative(input.leadsGenerated);
@@ -589,6 +650,7 @@ export async function getWorkspaceKpisAction(
 export async function triggerSocialSyncAction(
   postId?: string
 ): Promise<{ ok: boolean; queued: boolean; syncedCount: number }> {
+  await requireAdminSession();
   // 1. Envoi du job `sync-social-metrics` au Worker BullMQ (Redis)
   const queued = await enqueueSocialSyncJob(postId, "ui-manual");
 

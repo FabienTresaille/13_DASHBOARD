@@ -1,6 +1,28 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 
-export function middleware(request: NextRequest) {
+export default auth((request) => {
+  const { pathname } = request.nextUrl;
+
+  // 1. Routes publiques explicites : aucune redirection d'authentification
+  const isPublicRoute =
+    pathname.startsWith("/share") ||
+    pathname.startsWith("/p/") ||
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/api/auth");
+
+  // 2. Routes administrateur protégées : `/`, `/dashboard/:path*`, `/clients/:path*`
+  const isProtectedAdminRoute =
+    pathname === "/" ||
+    pathname.startsWith("/dashboard") ||
+    pathname.startsWith("/clients");
+
+  if (!isPublicRoute && isProtectedAdminRoute && !request.auth) {
+    const loginUrl = new URL("/login", request.nextUrl.origin);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  // 3. Détection dynamique de marque (Alsek vs Vitrine Caladoise) via Host ou query ?brand=
   const host = (request.headers.get("host") || "").toLowerCase();
   const brandQuery = (
     request.nextUrl.searchParams.get("brand") || ""
@@ -15,14 +37,11 @@ export function middleware(request: NextRequest) {
 
   let detectedBrand: "ALSEK" | "VITRINE" | "AUTO" = "AUTO";
 
-  // 1. Priorité au query param en local (?brand=vitrine ou ?brand=alsek)
   if (brandQuery === "vitrine" || brandQuery === "vitrine-caladoise") {
     detectedBrand = "VITRINE";
   } else if (brandQuery === "alsek") {
     detectedBrand = "ALSEK";
-  }
-  // 2. Détection automatique via le Host HTTP (Traefik multi-domaine)
-  else if (
+  } else if (
     host.includes(domainVitrine) ||
     host.includes("vitrine-caladoise") ||
     host.includes("vitrine")
@@ -44,7 +63,7 @@ export function middleware(request: NextRequest) {
 
   response.headers.set("x-pulse-brand-detected", detectedBrand);
   return response;
-}
+});
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.png$).*)"],

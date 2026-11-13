@@ -18,8 +18,9 @@ import {
   Receipt,
   Film,
   Share2,
+  LogOut,
 } from "lucide-react";
-import { setActiveWorkspaceAction } from "@/app/actions";
+import { setActiveWorkspaceAction, signOutAdminAction } from "@/app/actions";
 import type { WorkspaceFilter } from "@/lib/db";
 import { CreateClientModal } from "./CreateClientModal";
 
@@ -137,7 +138,11 @@ export function AppShell({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isNewClientOpen, setIsNewClientOpen] = useState(false);
 
-  if (pathname?.startsWith("/p/") || pathname?.startsWith("/share/")) {
+  if (
+    pathname?.startsWith("/p/") ||
+    pathname?.startsWith("/share/") ||
+    pathname?.startsWith("/login")
+  ) {
     return <>{children}</>;
   }
 
@@ -152,12 +157,21 @@ export function AppShell({
     });
   };
 
+  const handleLogout = () => {
+    setMobileMenuOpen(false);
+    startTransition(async () => {
+      await signOutAdminAction();
+      router.push("/login");
+      router.refresh();
+    });
+  };
+
   const navItems = [
     {
       label: "Dashboard & Bento KPIs",
       href: "/",
       icon: LayoutDashboard,
-      active: pathname === "/",
+      active: pathname === "/" || pathname === "/dashboard",
     },
     {
       label: "Facturation & ROI",
@@ -517,8 +531,8 @@ export function AppShell({
           </div>
         </nav>
 
-        {/* Footer Statut Système */}
-        <div className="p-3.5 border-t border-white/10 bg-black/20">
+        {/* Footer Statut Système & Déconnexion */}
+        <div className="p-3.5 border-t border-white/10 bg-black/20 space-y-2.5">
           <div className="flex items-center justify-between text-[11px] text-slate-400">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
@@ -534,6 +548,16 @@ export function AppShell({
               Live Sync
             </span>
           </div>
+
+          <button
+            type="button"
+            disabled={isPending}
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] hover:bg-rose-500/15 hover:border-rose-500/35 hover:text-rose-200 px-3 py-2 text-xs font-bold text-slate-300 transition cursor-pointer"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span>Déconnexion</span>
+          </button>
         </div>
       </aside>
 
